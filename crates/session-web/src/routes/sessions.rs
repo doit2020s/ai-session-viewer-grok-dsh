@@ -4,7 +4,7 @@ use axum::response::Json;
 use serde::Deserialize;
 use session_core::metadata;
 use session_core::models::session::SessionIndexEntry;
-use session_core::provider::{claude, codex, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, omp};
 
 use crate::{resolve_claude_project_dir, resolve_session_file_path, SessionSource};
 
@@ -58,6 +58,7 @@ pub async fn get_sessions(
             "claude" => claude::get_sessions(&project_id)?,
             "codex" => codex::get_sessions(&project_id)?,
             "grok" => grok::get_sessions(&project_id)?,
+            "dsh" => dsh::get_sessions(&project_id)?,
             "omp" => omp::get_sessions(&project_id)?,
             _ => return Err(format!("Unknown source: {}", source)),
         };
@@ -89,6 +90,7 @@ pub async fn get_invalid_sessions(
             "claude" => claude::get_invalid_sessions(&project_id)?,
             "codex" => codex::get_invalid_sessions(&project_id)?,
             "grok" => grok::get_invalid_sessions(&project_id)?,
+            "dsh" => dsh::get_invalid_sessions(&project_id)?,
             "omp" => omp::get_invalid_sessions(&project_id)?,
             _ => return Err(format!("Unknown source: {}", source)),
         };
@@ -142,6 +144,7 @@ pub async fn delete_session(
                 SessionSource::Claude => claude::invalidate_cache(),
                 SessionSource::Codex => codex::invalidate_sessions_cache(),
                 SessionSource::Grok => grok::invalidate_sessions_cache(),
+                SessionSource::Dsh => dsh::invalidate_paths(&[]),
                 SessionSource::Omp => omp::invalidate_sessions_cache(),
             }
             return Ok(Json(()));
@@ -238,6 +241,25 @@ pub async fn delete_session(
                 }
             }
         }
+        SessionSource::Dsh => {
+            let actual_session = resolved_path
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str());
+            let actual_project = resolved_path
+                .parent()
+                .and_then(|dir| dir.parent())
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str());
+            if session_id.as_deref().is_some_and(|id| actual_session != Some(id))
+                || project_id.as_deref().is_some_and(|id| actual_project != Some(id))
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "DeepSeek Harness session does not match the requested workspace".to_string(),
+                ));
+            }
+        }
         SessionSource::Omp => {
             let session_meta = omp::extract_session_meta(&resolved_path).ok_or_else(|| {
                 (
@@ -265,12 +287,12 @@ pub async fn delete_session(
     }
 
     tokio::task::spawn_blocking(move || {
-        if source == "grok" {
+        if source == "grok" || source == "dsh" {
             let session_dir = resolved_path
                 .parent()
-                .ok_or_else(|| "Invalid Grok session path".to_string())?;
+                .ok_or_else(|| "Invalid directory-backed session path".to_string())?;
             std::fs::remove_dir_all(session_dir)
-                .map_err(|error| format!("Failed to delete Grok session: {error}"))?;
+                .map_err(|error| format!("Failed to delete session: {error}"))?;
         } else if source == "omp" {
             omp::permanently_delete_session(&resolved_path)?;
         } else {

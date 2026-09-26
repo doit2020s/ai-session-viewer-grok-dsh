@@ -17,7 +17,7 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(1000);
 const MAX_BATCH_DURATION: Duration = Duration::from_secs(2);
 
 use session_core::parser::path_encoder::get_projects_dir;
-use session_core::provider::{claude, codex, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, omp};
 use session_core::watcher_batch::collect_until_quiet;
 
 /// Shared broadcast sender for file change events
@@ -82,6 +82,11 @@ fn run_file_watcher_once(tx_clone: &broadcast::Sender<Vec<String>>) {
             let _ = watcher.watch(&dir, RecursiveMode::Recursive);
         }
     }
+    if let Some(dir) = dsh::get_sessions_dir() {
+        if dir.exists() {
+            let _ = watcher.watch(&dir, RecursiveMode::Recursive);
+        }
+    }
     if let Some(dir) = omp::get_sessions_dir() {
         if dir.exists() {
             let _ = watcher.watch(&dir, RecursiveMode::Recursive);
@@ -98,7 +103,7 @@ fn run_file_watcher_once(tx_clone: &broadcast::Sender<Vec<String>>) {
                 Ok(event) => {
                     changed.extend(event.paths.into_iter().filter(|path| {
                         path.extension()
-                            .map(|ext| ext == "jsonl" || ext == "json")
+                            .map(|ext| ext == "jsonl" || ext == "json" || ext == "zstd")
                             .unwrap_or(false)
                     }));
                 }
@@ -139,6 +144,16 @@ fn run_file_watcher_once(tx_clone: &broadcast::Sender<Vec<String>>) {
                     .collect();
                 if !grok_paths.is_empty() {
                     grok::invalidate_paths(&grok_paths);
+                }
+            }
+            if let Some(dir) = dsh::get_sessions_dir() {
+                let dsh_paths: Vec<PathBuf> = paths
+                    .iter()
+                    .filter(|path| path.starts_with(&dir))
+                    .cloned()
+                    .collect();
+                if !dsh_paths.is_empty() {
+                    dsh::invalidate_paths(&dsh_paths);
                 }
             }
             if let Some(dir) = omp::get_sessions_dir() {

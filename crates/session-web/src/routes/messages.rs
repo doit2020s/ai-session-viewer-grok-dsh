@@ -5,7 +5,7 @@ use serde::Deserialize;
 use session_core::models::message::{
     question_index, PaginatedMessages, QuestionIndexEntry, RangeMessages,
 };
-use session_core::provider::{claude, codex, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, omp};
 
 use crate::resolve_session_file_path;
 
@@ -40,6 +40,7 @@ pub async fn get_messages(
         "claude" => claude::parse_session_messages(&resolved_path, page, page_size, from_end),
         "codex" => codex::parse_session_messages(&resolved_path, page, page_size, from_end),
         "grok" => grok::parse_session_messages(&resolved_path, page, page_size, from_end),
+        "dsh" => dsh::parse_session_messages(&resolved_path, page, page_size, from_end),
         "omp" => omp::parse_session_messages(&resolved_path, page, page_size, from_end),
         _ => Err(format!("Unknown source: {}", source)),
     })
@@ -73,6 +74,7 @@ pub async fn get_messages_range(
         "claude" => claude::parse_messages_range(&resolved_path, start, end),
         "codex" => codex::parse_messages_range(&resolved_path, start, end),
         "grok" => grok::parse_messages_range(&resolved_path, start, end),
+        "dsh" => dsh::parse_messages_range(&resolved_path, start, end),
         "omp" => omp::parse_messages_range(&resolved_path, start, end),
         _ => Err(format!("Unknown source: {}", source)),
     })
@@ -103,6 +105,7 @@ pub async fn get_question_index(
             "claude" => claude::parse_all_messages(&resolved_path),
             "codex" => codex::parse_all_messages(&resolved_path),
             "grok" => grok::parse_all_messages(&resolved_path),
+            "dsh" => dsh::parse_all_messages(&resolved_path),
             "omp" => omp::parse_all_messages(&resolved_path),
             _ => Err(format!("Unknown source: {source}")),
         }?;

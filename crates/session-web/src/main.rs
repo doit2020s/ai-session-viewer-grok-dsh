@@ -72,6 +72,7 @@ pub(crate) enum SessionSource {
     Claude,
     Codex,
     Grok,
+    Dsh,
     Omp,
 }
 
@@ -81,6 +82,7 @@ impl SessionSource {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "grok" => Ok(Self::Grok),
+            "dsh" => Ok(Self::Dsh),
             "omp" => Ok(Self::Omp),
             _ => Err(format!("Unknown source: {}", source)),
         }
