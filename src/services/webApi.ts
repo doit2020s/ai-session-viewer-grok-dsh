@@ -31,6 +31,30 @@ import type {
 } from "../types/providerSync";
 import { getApiBaseUrl, getApiToken } from "./nodeConfig";
 
+export async function editMessage(
+  _source: string,
+  _filePath: string,
+  _messageId: string,
+  _text: string,
+): Promise<void> {
+  throw new Error("会话上下文编辑目前只支持桌面本地模式");
+}
+
+export async function deleteMessage(
+  _source: string,
+  _filePath: string,
+  _messageId: string,
+): Promise<void> {
+  throw new Error("删除会话上下文目前只支持桌面本地模式");
+}
+
+export async function openSessionFolder(
+  _source: string,
+  _filePath: string,
+): Promise<void> {
+  throw new Error("打开会话目录目前只支持桌面本地模式");
+}
+
 function getToken(): string | null {
   return getApiToken();
 }

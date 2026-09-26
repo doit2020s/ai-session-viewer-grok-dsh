@@ -264,8 +264,8 @@ function requestInitialMessages(
 
 interface AppState {
   // Source
-  source: "claude" | "codex" | "grok" | "omp";
-  setSource: (s: "claude" | "codex" | "grok" | "omp") => void;
+  source: "claude" | "codex" | "grok" | "dsh" | "omp";
+  setSource: (s: "claude" | "codex" | "grok" | "dsh" | "omp") => void;
 
   // Display settings
   showTimestamp: boolean;

@@ -16,7 +16,8 @@ use crate::state::file_modified_key;
 
 const CHAT_HISTORY_FILE: &str = "chat_history.jsonl";
 const UNROOTED_PROJECT: &str = "<grok-unrooted>";
-const DISK_CACHE_VERSION: u32 = 1;
+// v2 includes Grok's client-state customName values in the displayed title.
+const DISK_CACHE_VERSION: u32 = 2;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +88,25 @@ pub fn get_sessions_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".grok")))
         .map(|home| home.join("sessions"))
+}
+
+/// Grok's UI renames (including fork names) live outside the session folder.
+/// They are stored in ~/.grok/client-state/session-meta.json and are not
+/// copied into summary.json. Read the value by session id so forked sessions
+/// do not inherit the parent's generated title in viewers.
+fn custom_name_for(session_id: &str) -> Option<String> {
+    let sessions = get_sessions_dir()?;
+    let path = sessions.parent()?.join("client-state").join("session-meta.json");
+    let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let meta = value.get(session_id)?;
+    if meta.get("provider").and_then(Value::as_str) != Some("grok") {
+        return None;
+    }
+    meta.get("customName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
 }
 
 fn session_dirs() -> Vec<PathBuf> {
@@ -202,6 +222,369 @@ pub fn parse_all_messages(path: &Path) -> Result<Vec<DisplayMessage>, String> {
         .collect())
 }
 
+fn replace_exact_text(value: &mut Value, old: &str, new: &str) -> usize {
+    match value {
+        Value::String(current) if current == old => {
+            *current = new.to_string();
+            1
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .map(|item| replace_exact_text(item, old, new))
+            .sum(),
+        Value::Object(map) => map
+            .values_mut()
+            .map(|item| replace_exact_text(item, old, new))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn sync_updates_log(path: &Path, old_text: &str, new_text: &str) -> Result<usize, String> {
+    let updates_path = path
+        .parent()
+        .ok_or_else(|| "Grok 会话目录不存在".to_string())?
+        .join("updates.jsonl");
+    if !updates_path.is_file() {
+        return Ok(0);
+    }
+
+    // User entries in chat_history include the display wrapper, while ACP's
+    // authoritative update stores only the inner query text.
+    let update_old = old_text
+        .strip_prefix("<user_query>\n")
+        .and_then(|value| value.strip_suffix("\n</user_query>"))
+        .unwrap_or(old_text);
+    let update_new = if update_old != old_text {
+        new_text
+            .strip_prefix("<user_query>\n")
+            .and_then(|value| value.strip_suffix("\n</user_query>"))
+            .unwrap_or(new_text)
+    } else {
+        new_text
+    };
+
+    let content = fs::read_to_string(&updates_path)
+        .map_err(|error| format!("读取 Grok 恢复日志失败：{error}"))?;
+    let mut replacements = 0usize;
+    let mut rendered = String::with_capacity(content.len());
+    for line in content.lines() {
+        let mut row = serde_json::from_str::<Value>(line)
+            .map_err(|error| format!("Grok 恢复日志包含无效 JSON：{error}"))?;
+        replacements += replace_exact_text(&mut row, update_old, update_new);
+        rendered.push_str(
+            &serde_json::to_string(&row)
+                .map_err(|error| format!("序列化 Grok 恢复日志失败：{error}"))?,
+        );
+        rendered.push('\n');
+    }
+    if !content.ends_with('\n') {
+        rendered.pop();
+    }
+    if replacements == 0 {
+        return Ok(0);
+    }
+    let tmp_path = updates_path.with_extension("jsonl.codex-edit.tmp");
+    fs::write(&tmp_path, rendered).map_err(|error| format!("写入 Grok 恢复日志临时文件失败：{error}"))?;
+    fs::rename(&tmp_path, &updates_path)
+        .map_err(|error| format!("保存 Grok 恢复日志失败：{error}"))?;
+    Ok(replacements)
+}
+
+fn normalized_update_text(text: &str) -> &str {
+    text.strip_prefix("<user_query>\n")
+        .and_then(|value| value.strip_suffix("\n</user_query>"))
+        .unwrap_or(text)
+}
+
+fn value_contains_exact_text(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(current) => current == expected,
+        Value::Array(items) => items
+            .iter()
+            .any(|item| value_contains_exact_text(item, expected)),
+        Value::Object(map) => map
+            .values()
+            .any(|item| value_contains_exact_text(item, expected)),
+        _ => false,
+    }
+}
+
+fn remove_update_event(
+    path: &Path,
+    row_type: &str,
+    old_text: &str,
+    occurrence: usize,
+) -> Result<usize, String> {
+    let updates_path = path
+        .parent()
+        .ok_or_else(|| "Grok 会话目录不存在".to_string())?
+        .join("updates.jsonl");
+    if !updates_path.is_file() {
+        return Ok(0);
+    }
+
+    let expected_update_type = match row_type {
+        "user" => "user_message_chunk",
+        "assistant" => "agent_message_chunk",
+        "reasoning" => "agent_thought_chunk",
+        _ => return Err("该 Grok 记录类型不支持删除".to_string()),
+    };
+    let expected_text = normalized_update_text(old_text);
+    let content = fs::read_to_string(&updates_path)
+        .map_err(|error| format!("读取 Grok 恢复日志失败：{error}"))?;
+    let mut matched = 0usize;
+    let mut removed = 0usize;
+    let mut rendered = String::with_capacity(content.len());
+
+    for line in content.lines() {
+        let row = serde_json::from_str::<Value>(line)
+            .map_err(|error| format!("Grok 恢复日志包含无效 JSON：{error}"))?;
+        let update = row.pointer("/params/update");
+        let is_match = update
+            .and_then(|value| value.get("sessionUpdate"))
+            .and_then(Value::as_str)
+            == Some(expected_update_type)
+            && update.is_some_and(|value| value_contains_exact_text(value, expected_text));
+
+        if is_match {
+            if matched == occurrence {
+                removed += 1;
+                matched += 1;
+                continue;
+            }
+            matched += 1;
+        }
+        rendered.push_str(line);
+        rendered.push('\n');
+    }
+    if !content.ends_with('\n') {
+        rendered.pop();
+    }
+    if removed == 0 {
+        return Ok(0);
+    }
+
+    let tmp_path = updates_path.with_extension("jsonl.codex-delete.tmp");
+    fs::write(&tmp_path, rendered)
+        .map_err(|error| format!("写入 Grok 恢复日志临时文件失败：{error}"))?;
+    fs::rename(&tmp_path, &updates_path)
+        .map_err(|error| format!("保存 Grok 恢复日志失败：{error}"))?;
+    Ok(removed)
+}
+
+fn refresh_tail_summary(path: &Path, lines: &[String]) -> Result<(), String> {
+    let Some(summary_path) = path.parent().map(|parent| parent.join("summary.json")) else {
+        return Ok(());
+    };
+    if !summary_path.is_file() {
+        return Ok(());
+    }
+    let summary_text = fs::read_to_string(&summary_path)
+        .map_err(|error| format!("读取 summary.json 失败：{error}"))?;
+    let mut summary = serde_json::from_str::<Value>(&summary_text)
+        .map_err(|error| format!("解析 summary.json 失败：{error}"))?;
+    let tail = lines.iter().rev().find_map(|line| {
+        let row = serde_json::from_str::<Value>(line).ok()?;
+        match row.get("type").and_then(Value::as_str) {
+            Some("assistant") => text_content(row.get("content")?),
+            Some("user") if row.get("synthetic_reason").is_none() => {
+                text_content(row.get("content")?)
+            }
+            _ => None,
+        }
+    });
+    let compact: String = tail
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(500)
+        .collect();
+    summary["last_turn_summary"] = Value::String(compact.clone());
+    summary["last_recap"] = Value::String(compact);
+    summary["updated_at"] = Value::String(chrono::Utc::now().to_rfc3339());
+    let rendered = serde_json::to_string_pretty(&summary)
+        .map_err(|error| format!("序列化 summary.json 失败：{error}"))?;
+    let tmp_path = summary_path.with_extension("json.codex-delete.tmp");
+    fs::write(&tmp_path, rendered)
+        .map_err(|error| format!("写入 summary.json 临时文件失败：{error}"))?;
+    fs::rename(&tmp_path, &summary_path)
+        .map_err(|error| format!("保存 summary.json 失败：{error}"))?;
+    Ok(())
+}
+
+pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
+    let content = fs::read_to_string(path).map_err(|error| format!("读取 Grok 会话失败：{error}"))?;
+    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+    let mut target = None;
+
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row = serde_json::from_str::<Value>(line)
+            .map_err(|error| format!("会话第 {} 行不是有效 JSON：{error}", index + 1))?;
+        let row_type = row.get("type").and_then(Value::as_str).unwrap_or("");
+        if row_type != "user" && row_type != "assistant" && row_type != "reasoning" {
+            continue;
+        }
+        let value = if row_type == "reasoning" {
+            row.get("summary")
+        } else {
+            row.get("content")
+        };
+        let Some(row_text) = value.and_then(text_content) else {
+            continue;
+        };
+        if crate::fork::line_message_id(index, &row) == message_id {
+            target = Some((index, row_type.to_string(), row_text));
+            break;
+        }
+    }
+
+    let Some((target_index, row_type, old_text)) = target else {
+        return Err("找不到要删除的消息，可能会话已被其他进程修改".to_string());
+    };
+    let occurrence = lines[..target_index]
+        .iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|row| row.get("type").and_then(Value::as_str) == Some(row_type.as_str()))
+        .filter_map(|row| {
+            let value = if row_type == "reasoning" {
+                row.get("summary")
+            } else {
+                row.get("content")
+            }?;
+            text_content(value)
+        })
+        .filter(|text| normalized_update_text(text) == normalized_update_text(&old_text))
+        .count();
+    let updates_path = path.parent().map(|parent| parent.join("updates.jsonl"));
+    let has_updates_log = updates_path.as_ref().is_some_and(|candidate| candidate.is_file());
+    let removed_updates = remove_update_event(path, &row_type, &old_text, occurrence)?;
+    if has_updates_log && removed_updates == 0 {
+        return Err("在 updates.jsonl 中找不到对应上下文，未删除以避免终端与界面不一致".to_string());
+    }
+
+    lines.remove(target_index);
+    let mut output = lines.join("\n");
+    if content.ends_with('\n') {
+        output.push('\n');
+    }
+    let tmp_path = path.with_extension("jsonl.codex-delete.tmp");
+    fs::write(&tmp_path, output).map_err(|error| format!("写入临时会话失败：{error}"))?;
+    fs::rename(&tmp_path, path).map_err(|error| format!("保存 Grok 会话失败：{error}"))?;
+    refresh_tail_summary(path, &lines)
+}
+
+/// Edit the visible text of one Grok JSONL record in place. Grok identifies
+/// records by the stable line/digest id exposed to the frontend. When the
+/// edited record is the last visible turn, keep summary.json in sync so the
+/// next CLI resume sees the same tail context.
+pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), String> {
+    let content = fs::read_to_string(path).map_err(|error| format!("读取 Grok 会话失败：{error}"))?;
+    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+    let mut target_line = None;
+    let mut target_type = None;
+    let mut old_text = None;
+
+    for (index, line) in lines.iter_mut().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(mut row) = serde_json::from_str::<Value>(line) else {
+            return Err(format!("会话第 {} 行不是有效 JSON，已停止保存", index + 1));
+        };
+        if crate::fork::line_message_id(index, &row) != message_id {
+            continue;
+        }
+        let row_type = row
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if row_type != "user" && row_type != "assistant" {
+            return Err("只能编辑用户消息或助手消息".to_string());
+        }
+        let Some(content_value) = row.get_mut("content") else {
+            return Err("该消息没有可编辑的 content 字段".to_string());
+        };
+        let previous_text = text_content(content_value).ok_or_else(|| "该消息没有可编辑的文本内容".to_string())?;
+        match content_value {
+            Value::String(value) => *value = text.to_string(),
+            Value::Array(blocks) => {
+                let Some(block) = blocks.iter_mut().find(|block| {
+                    block.get("type").and_then(Value::as_str) == Some("text")
+                }) else {
+                    return Err("该消息没有可编辑的文本块".to_string());
+                };
+                block["text"] = Value::String(text.to_string());
+            }
+            _ => return Err("该消息的 content 格式不支持编辑".to_string()),
+        }
+        *line = serde_json::to_string(&row).map_err(|error| format!("序列化消息失败：{error}"))?;
+        target_line = Some(index);
+        target_type = Some(row_type);
+        old_text = Some(previous_text);
+        break;
+    }
+
+    let Some(target_line) = target_line else {
+        return Err("找不到要编辑的消息，可能会话已被其他进程修改".to_string());
+    };
+
+    let last_conversation_line = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, line)| {
+            let row = serde_json::from_str::<Value>(line).ok()?;
+            (row.get("type").and_then(Value::as_str) == Some("user")).then_some(index)
+        });
+
+    let mut output = lines.join("\n");
+    if content.ends_with('\n') {
+        output.push('\n');
+    }
+    let tmp_path = path.with_extension("jsonl.codex-edit.tmp");
+    fs::write(&tmp_path, output).map_err(|error| format!("写入临时会话失败：{error}"))?;
+    fs::rename(&tmp_path, path).map_err(|error| format!("保存 Grok 会话失败：{error}"))?;
+
+    if let Some(previous_text) = old_text.as_deref() {
+        let updates_path = path.parent().map(|parent| parent.join("updates.jsonl"));
+        let has_updates_log = updates_path.as_ref().is_some_and(|candidate| candidate.is_file());
+        let replacements = sync_updates_log(path, previous_text, text)?;
+        if has_updates_log && replacements == 0 {
+            return Err("展示文件已保存，但在 updates.jsonl 中找不到对应消息，已停止以避免终端继续使用旧上下文".to_string());
+        }
+    }
+
+    if last_conversation_line.is_some_and(|last| target_line >= last) {
+        let summary_path = path.parent().map(|parent| parent.join("summary.json"));
+        if let Some(summary_path) = summary_path {
+            if let Ok(summary_text) = fs::read_to_string(&summary_path) {
+                if let Ok(mut summary) = serde_json::from_str::<Value>(&summary_text) {
+                    let summary_text = text.trim();
+                    let compact: String = summary_text.chars().take(500).collect();
+                    summary["last_turn_summary"] = Value::String(compact.clone());
+                    summary["last_recap"] = Value::String(compact);
+                    summary["updated_at"] = Value::String(chrono::Utc::now().to_rfc3339());
+                    let summary_tmp = summary_path.with_extension("json.codex-edit.tmp");
+                    let rendered = serde_json::to_string_pretty(&summary)
+                        .map_err(|error| format!("序列化 summary.json 失败：{error}"))?;
+                    fs::write(&summary_tmp, rendered)
+                        .map_err(|error| format!("写入 summary.json 临时文件失败：{error}"))?;
+                    fs::rename(&summary_tmp, &summary_path)
+                        .map_err(|error| format!("保存 summary.json 失败：{error}"))?;
+                }
+            }
+        }
+    }
+
+    let _ = target_type;
+    Ok(())
+}
+
 fn text_message_count(messages: &[DisplayMessage]) -> u32 {
     messages
         .iter()
@@ -243,16 +626,19 @@ fn session_entry(dir: &Path) -> Option<SessionIndexEntry> {
         })
     });
 
+    let generated_title = summary
+        .get("session_summary")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+        .map(ToString::to_string);
+    let display_title = custom_name_for(&session_id).or(generated_title);
+
     Some(SessionIndexEntry {
         source: "grok".to_string(),
         session_id,
         file_path: file_path.to_string_lossy().into_owned(),
         first_prompt,
-        thread_name: summary
-            .get("session_summary")
-            .and_then(Value::as_str)
-            .filter(|title| !title.trim().is_empty())
-            .map(ToString::to_string),
+        thread_name: display_title,
         message_count,
         created: summary
             .get("created_at")
@@ -636,6 +1022,86 @@ mod tests {
         assert!(page.has_more);
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn edits_last_message_and_updates_summary() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ai-session-viewer-grok-edit-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let history = dir.join(CHAT_HISTORY_FILE);
+        fs::write(
+            &history,
+            "{\"type\":\"user\",\"content\":\"old prompt\"}\n{\"type\":\"assistant\",\"content\":\"old answer\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("summary.json"),
+            serde_json::json!({"last_turn_summary":"old answer","last_recap":"old answer"}).to_string(),
+        )
+        .unwrap();
+        let rows: Vec<Value> = fs::read_to_string(&history)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let id = crate::fork::line_message_id(1, &rows[1]);
+        edit_message(&history, &id, "new answer").unwrap();
+        let saved = fs::read_to_string(&history).unwrap();
+        assert!(saved.contains("new answer"));
+        let summary: Value = serde_json::from_str(&fs::read_to_string(dir.join("summary.json")).unwrap()).unwrap();
+        assert_eq!(summary["last_turn_summary"], "new answer");
+        assert_eq!(summary["last_recap"], "new answer");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn deletes_reasoning_from_history_and_authoritative_updates() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ai-session-viewer-grok-delete-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let history = dir.join(CHAT_HISTORY_FILE);
+        fs::write(
+            &history,
+            "{\"type\":\"user\",\"content\":\"question\"}\n{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"private thought\"}]}\n{\"type\":\"assistant\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("updates.jsonl"),
+            "{\"params\":{\"update\":{\"sessionUpdate\":\"user_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"question\"}}}}\n{\"params\":{\"update\":{\"sessionUpdate\":\"agent_thought_chunk\",\"content\":{\"type\":\"text\",\"text\":\"private thought\"}}}}\n{\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"answer\"}}}}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("summary.json"),
+            serde_json::json!({"last_turn_summary":"answer","last_recap":"answer"}).to_string(),
+        )
+        .unwrap();
+
+        let rows: Vec<Value> = fs::read_to_string(&history)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let id = crate::fork::line_message_id(1, &rows[1]);
+        delete_message(&history, &id).unwrap();
+
+        assert!(!fs::read_to_string(&history).unwrap().contains("private thought"));
+        let updates = fs::read_to_string(dir.join("updates.jsonl")).unwrap();
+        assert!(!updates.contains("private thought"));
+        assert!(updates.contains("answer"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

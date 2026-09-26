@@ -80,6 +80,35 @@ export async function getMessages(
   });
 }
 
+export async function editMessage(
+  source: string,
+  filePath: string,
+  messageId: string,
+  text: string,
+): Promise<void> {
+  return invoke("edit_message", {
+    source,
+    filePath,
+    messageId,
+    text,
+  });
+}
+
+export async function deleteMessage(
+  source: string,
+  filePath: string,
+  messageId: string,
+): Promise<void> {
+  return invoke("delete_message", { source, filePath, messageId });
+}
+
+export async function openSessionFolder(
+  source: string,
+  filePath: string,
+): Promise<void> {
+  return invoke("open_session_folder", { source, filePath });
+}
+
 /** Load `[start, end)` slice for the windowed (progressive) message view. */
 export async function getMessagesRange(
   source: string,

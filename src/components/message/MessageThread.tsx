@@ -4,7 +4,7 @@ import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ToolOutputMessage } from "./ToolOutputMessage";
 import { useAppStore } from "../../stores/appStore";
-import { Star, GitFork, Play, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { Star, GitFork, Play, Loader2, ChevronDown, ChevronRight, Pencil, Save, X, Trash2 } from "lucide-react";
 import { api } from "../../services/api";
 import { useExpandAllControl } from "../common/ExpandAllContext";
 import { getUserMessageId, type ThreadDisplayNode } from "./threading";
@@ -28,6 +28,7 @@ interface MessageThreadProps {
   priorityMessageId?: string | null;
   /** Absolute index of the first message in this rendered window. */
   messageOffset?: number;
+  onMessageEdited?: () => Promise<void> | void;
 }
 
 const DEFER_RENDER_THRESHOLD = 24;
@@ -209,7 +210,7 @@ function getThreadLineText(node: ThreadDisplayNode, source: string): string {
   const title = node.threadTitle.trim();
 
   if (node.message.role === "assistant") {
-    const assistantName = source === "claude" ? "Claude" : source === "omp" ? "Oh My Pi" : "Codex";
+    const assistantName = source === "claude" ? "Claude" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : "Codex";
     return title ? `${assistantName} · ${title}` : assistantName;
   }
 
@@ -340,6 +341,7 @@ export const MessageThread = memo(function MessageThread({
   viewportRef,
   priorityMessageId,
   messageOffset = 0,
+  onMessageEdited,
 }: MessageThreadProps) {
   const addBookmark = useAppStore((state) => state.addBookmark);
   const removeBookmark = useAppStore((state) => state.removeBookmark);
@@ -352,6 +354,13 @@ export const MessageThread = memo(function MessageThread({
     y: number;
     userMsgId: string;
   } | null>(null);
+  const [editingMessage, setEditingMessage] = useState<{ id: string; text: string } | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [deletingMessage, setDeletingMessage] = useState<{ id: string; preview: string; reasoning: boolean } | null>(null);
+  const [deleteSaving, setDeleteSaving] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!assistantContextMenu) return;
@@ -438,6 +447,77 @@ export const MessageThread = memo(function MessageThread({
     }
   };
   const showActionButtons = Boolean(filePath);
+  const canEdit = source === "grok" && __IS_TAURI__ && Boolean(filePath);
+  const openEditor = (message: DisplayMessage) => {
+    if (!message.uuid) return;
+    const text = message.content
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text)
+      .join("\n\n");
+    setEditError(null);
+    setEditText(text);
+    setEditingMessage({ id: message.uuid, text });
+  };
+  const saveEditedMessage = async () => {
+    if (!editingMessage || !filePath) return;
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      await api.editMessage(source, filePath, editingMessage.id, editText);
+      setEditingMessage(null);
+      await onMessageEdited?.();
+    } catch (error) {
+      setEditError(typeof error === "string" ? error : String(error));
+    } finally {
+      setEditSaving(false);
+    }
+  };
+  const openDeleteDialog = (message: DisplayMessage) => {
+    if (!message.uuid) return;
+    const text = message.content
+      .filter((block): block is { type: "text" | "reasoning"; text: string } => block.type === "text" || block.type === "reasoning")
+      .map((block) => block.text)
+      .join("\n\n")
+      .trim();
+    setDeleteError(null);
+    setDeletingMessage({
+      id: message.uuid,
+      preview: text.slice(0, 180),
+      reasoning: message.content.some((block) => block.type === "reasoning"),
+    });
+  };
+  const confirmDeleteMessage = async () => {
+    if (!deletingMessage || !filePath) return;
+    setDeleteSaving(true);
+    setDeleteError(null);
+    try {
+      await api.deleteMessage(source, filePath, deletingMessage.id);
+      setDeletingMessage(null);
+      await onMessageEdited?.();
+    } catch (error) {
+      setDeleteError(typeof error === "string" ? error : String(error));
+    } finally {
+      setDeleteSaving(false);
+    }
+  };
+
+  const renderDeleteDialog = () => deletingMessage && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !deleteSaving && setDeletingMessage(null)}>
+      <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-lg font-semibold">删除{deletingMessage.reasoning ? "思考过程" : "指定上下文"}</h3>
+          <button onClick={() => setDeletingMessage(null)} disabled={deleteSaving}><X className="h-4 w-4" /></button>
+        </div>
+        <p className="text-sm text-muted-foreground">该内容会同时从聊天记录和 Grok 终端恢复上下文中删除。</p>
+        {deletingMessage.preview && <p className="mt-3 max-h-32 overflow-auto rounded-md border border-border bg-muted/40 p-3 text-sm whitespace-pre-wrap">{deletingMessage.preview}</p>}
+        {deleteError && <p className="mt-2 text-sm text-destructive">删除失败：{deleteError}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setDeletingMessage(null)} disabled={deleteSaving}>取消</button>
+          <button className="inline-flex items-center gap-1 rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground" onClick={confirmDeleteMessage} disabled={deleteSaving}><Trash2 className="h-3.5 w-3.5" />{deleteSaving ? "删除中…" : "确认删除"}</button>
+        </div>
+      </div>
+    </div>
+  );
 
   const roots = useMemo<ThreadDisplayNode[]>(
     () =>
@@ -541,6 +621,26 @@ export const MessageThread = memo(function MessageThread({
                 {isForking ? "分叉中…" : "Fork 分叉"}
               </button>
             )}
+            {canEdit && msg.uuid && (
+              <button
+                type="button"
+                onClick={() => openEditor(msg)}
+                className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border/60 bg-background/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title="编辑并保存上下文"
+              >
+                <Pencil className="h-3.5 w-3.5" />编辑
+              </button>
+            )}
+            {canEdit && msg.uuid && (
+              <button
+                type="button"
+                onClick={() => openDeleteDialog(msg)}
+                className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-destructive/40 bg-background/70 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                title="从 Grok 上下文中删除此消息"
+              >
+                <Trash2 className="h-3.5 w-3.5" />删除
+              </button>
+            )}
             {canResume && (
               <button
                 onClick={handleResumeFromMessage}
@@ -589,6 +689,26 @@ export const MessageThread = memo(function MessageThread({
             threadHint={showActionButtons && node.forkUserMessageId ? "右击可从此回复分叉" : null}
           />
         </div>
+        {canEdit && msg.uuid && (
+          <div className="mt-1 flex items-center gap-1">
+            {!msg.content.some((block) => block.type === "reasoning") && <button
+              type="button"
+              onClick={() => openEditor(msg)}
+              className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="编辑并保存上下文"
+            >
+              <Pencil className="h-3.5 w-3.5" />编辑
+            </button>}
+            <button
+              type="button"
+              onClick={() => openDeleteDialog(msg)}
+              className="inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-background/70 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
+              title={msg.content.some((block) => block.type === "reasoning") ? "删除此思考过程" : "从 Grok 上下文中删除此回复"}
+            >
+              <Trash2 className="h-3.5 w-3.5" />删除
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -636,6 +756,17 @@ export const MessageThread = memo(function MessageThread({
         {forkError && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">分叉失败：{forkError}</div>}
         {roots.map((node) => renderMessage(node))}
         {renderAssistantContextMenu()}
+        {editingMessage && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !editSaving && setEditingMessage(null)}>
+            <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+              <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 Grok 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
+              <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-56 w-full rounded-md border border-border bg-background p-3 text-sm outline-none focus:border-primary" autoFocus />
+              {editError && <p className="mt-2 text-sm text-destructive">保存失败：{editError}</p>}
+              <div className="mt-4 flex justify-end gap-2"><button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setEditingMessage(null)} disabled={editSaving}>取消</button><button className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={saveEditedMessage} disabled={editSaving || !editText.trim()}><Save className="h-3.5 w-3.5" />{editSaving ? "保存中…" : "保存"}</button></div>
+            </div>
+          </div>
+        )}
+        {renderDeleteDialog()}
       </div>
     );
   }
@@ -646,6 +777,17 @@ export const MessageThread = memo(function MessageThread({
         <ThreadBranch key={node.id} node={node} renderMessage={renderMessage} source={source} />
       ))}
       {renderAssistantContextMenu()}
+      {editingMessage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !editSaving && setEditingMessage(null)}>
+          <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 Grok 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
+            <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-56 w-full rounded-md border border-border bg-background p-3 text-sm outline-none focus:border-primary" autoFocus />
+            {editError && <p className="mt-2 text-sm text-destructive">保存失败：{editError}</p>}
+            <div className="mt-4 flex justify-end gap-2"><button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setEditingMessage(null)} disabled={editSaving}>取消</button><button className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={saveEditedMessage} disabled={editSaving || !editText.trim()}><Save className="h-3.5 w-3.5" />{editSaving ? "保存中…" : "保存"}</button></div>
+          </div>
+        </div>
+      )}
+      {renderDeleteDialog()}
     </div>
   );
 }, (prevProps, nextProps) => (
@@ -661,4 +803,5 @@ export const MessageThread = memo(function MessageThread({
   prevProps.projectPath === nextProps.projectPath &&
   prevProps.priorityMessageId === nextProps.priorityMessageId &&
   prevProps.messageOffset === nextProps.messageOffset
+  && prevProps.onMessageEdited === nextProps.onMessageEdited
 ));

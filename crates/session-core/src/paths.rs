@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::parser::path_encoder::get_projects_dir;
 use crate::provider::codex;
+use crate::provider::dsh;
 use crate::provider::grok;
 use crate::provider::omp;
 
@@ -26,6 +27,7 @@ pub enum SessionSourceKind {
     Claude,
     Codex,
     Grok,
+    Dsh,
     Omp,
 }
 
@@ -35,6 +37,7 @@ impl SessionSourceKind {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "grok" => Ok(Self::Grok),
+            "dsh" => Ok(Self::Dsh),
             "omp" => Ok(Self::Omp),
             _ => Err(format!("Unknown source: {}", source)),
         }
@@ -74,6 +77,12 @@ fn canonical_grok_root() -> Result<PathBuf, String> {
     let path = grok::get_sessions_dir()
         .ok_or_else(|| "Could not find Grok sessions directory".to_string())?;
     canonicalize_dir(path, "Grok sessions directory")
+}
+
+fn canonical_dsh_root() -> Result<PathBuf, String> {
+    let path = dsh::get_sessions_dir()
+        .ok_or_else(|| "Could not find DeepSeek Harness sessions directory".to_string())?;
+    canonicalize_dir(path, "DeepSeek Harness sessions directory")
 }
 
 fn canonical_omp_root() -> Result<PathBuf, String> {
@@ -147,6 +156,23 @@ fn validate_grok_layout(path: &Path, base: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_dsh_layout(path: &Path, base: &Path) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(base)
+        .map_err(|_| "Session file is outside the DeepSeek Harness sessions directory".to_string())?;
+    let components: Vec<_> = relative.components().collect();
+    if components.len() != 3
+        || components.iter().any(|component| !matches!(component, Component::Normal(_)))
+        || path.file_name().and_then(|name| name.to_str()) != Some("session.v3.jsonl.zstd")
+    {
+        return Err(
+            "DeepSeek Harness session file must be sessions/<workspace>/<session-id>/session.v3.jsonl.zstd"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_omp_layout(path: &Path, base: &Path) -> Result<(), String> {
     let relative = path
         .strip_prefix(base)
@@ -186,7 +212,9 @@ pub fn validate_session_file(source: &str, file_path: &str) -> Result<PathBuf, S
     if !canonical.is_file() {
         return Err(format!("Session file not found: {}", file_path));
     }
-    if canonical.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+    if kind != SessionSourceKind::Dsh
+        && canonical.extension().and_then(|ext| ext.to_str()) != Some("jsonl")
+    {
         return Err("Session file must be a .jsonl file".to_string());
     }
 
@@ -206,6 +234,10 @@ pub fn validate_session_file(source: &str, file_path: &str) -> Result<PathBuf, S
         SessionSourceKind::Grok => {
             let base = canonical_grok_root()?;
             validate_grok_layout(&canonical, &base)?;
+        }
+        SessionSourceKind::Dsh => {
+            let base = canonical_dsh_root()?;
+            validate_dsh_layout(&canonical, &base)?;
         }
         SessionSourceKind::Omp => {
             let base = canonical_omp_root()?;

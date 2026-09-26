@@ -6,7 +6,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use session_core::parser::path_encoder::get_projects_dir;
-use session_core::provider::{claude, codex, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, omp};
 use session_core::watcher_batch::collect_until_quiet;
 
 /// Minimum interval between emitting fs-change events to the frontend.
@@ -20,12 +20,14 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
     let claude_dir = get_projects_dir();
     let codex_dir = codex::get_sessions_dir();
     let grok_dir = grok::get_sessions_dir();
+    let dsh_dir = dsh::get_sessions_dir();
     let omp_dir = omp::get_sessions_dir();
 
     // At least one directory must exist
     if claude_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
         || codex_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
         || grok_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
+        || dsh_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
         || omp_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
     {
         // ok, proceed
@@ -66,6 +68,11 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
                 let _ = watcher.watch(dir, RecursiveMode::Recursive);
             }
         }
+        if let Some(ref dir) = dsh_dir {
+            if dir.exists() {
+                let _ = watcher.watch(dir, RecursiveMode::Recursive);
+            }
+        }
         if let Some(ref dir) = omp_dir {
             if dir.exists() {
                 let _ = watcher.watch(dir, RecursiveMode::Recursive);
@@ -89,7 +96,7 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
                             !is_meta
                                 && path
                                     .extension()
-                                    .map(|ext| ext == "jsonl" || ext == "json")
+                                    .map(|ext| ext == "jsonl" || ext == "json" || ext == "zstd")
                                     .unwrap_or(false)
                         }));
                     }
@@ -108,6 +115,10 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
                     .map(|dir| paths.iter().any(|path| path.starts_with(dir)))
                     .unwrap_or(false);
                 let is_grok_change = grok_dir
+                    .as_ref()
+                    .map(|dir| paths.iter().any(|path| path.starts_with(dir)))
+                    .unwrap_or(false);
+                let is_dsh_change = dsh_dir
                     .as_ref()
                     .map(|dir| paths.iter().any(|path| path.starts_with(dir)))
                     .unwrap_or(false);
@@ -152,6 +163,18 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
                             .collect();
                         if !provider_paths.is_empty() {
                             grok::invalidate_paths(&provider_paths);
+                        }
+                    }
+                }
+                if is_dsh_change {
+                    if let Some(ref dir) = dsh_dir {
+                        let provider_paths: Vec<PathBuf> = paths
+                            .iter()
+                            .filter(|path| path.starts_with(dir))
+                            .cloned()
+                            .collect();
+                        if !provider_paths.is_empty() {
+                            dsh::invalidate_paths(&provider_paths);
                         }
                     }
                 }

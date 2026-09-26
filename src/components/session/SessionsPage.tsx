@@ -17,6 +17,7 @@ import {
   Star,
   AlertTriangle,
   Download,
+  FolderOpen,
   CheckSquare,
   X,
 } from "lucide-react";
@@ -166,6 +167,18 @@ export function SessionsPage() {
       }
     } else {
       await handleCopyCommand(e, sessionId);
+    }
+  };
+
+  const handleOpenSessionFolder = async (e: React.MouseEvent, filePath: string) => {
+    e.stopPropagation();
+    setResumeError(null);
+    try {
+      await api.openSessionFolder(source, filePath);
+    } catch (err) {
+      const msg = typeof err === "string" ? err : String(err);
+      setResumeError(msg);
+      setTimeout(() => setResumeError(null), 5000);
     }
   };
 
@@ -573,6 +586,15 @@ export function SessionsPage() {
                       title="克隆到其他 Provider（非破坏式）"
                     >
                       <CopyPlus className="w-3.5 h-3.5" />克隆到其他 Provider
+                    </button>
+                  )}
+                  {__IS_TAURI__ && source === "grok" && (
+                    <button
+                      onClick={(e) => handleOpenSessionFolder(e, session.filePath)}
+                      className="p-1.5 text-xs text-muted-foreground rounded-md hover:bg-accent hover:text-foreground transition-colors"
+                      title="在资源管理器中打开 Grok 会话目录"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5" />打开会话目录
                     </button>
                   )}
                   {(source === "claude" || source === "codex" || source === "omp") && (

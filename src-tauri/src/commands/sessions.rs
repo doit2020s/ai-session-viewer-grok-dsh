@@ -2,7 +2,7 @@ use session_core::metadata;
 use session_core::metadata::validate_session_id;
 use session_core::models::session::SessionIndexEntry;
 use session_core::paths::validate_session_file;
-use session_core::provider::{claude, codex, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, omp};
 use session_core::recyclebin;
 
 fn merge_session_metadata(source: &str, project_id: &str, sessions: &mut [SessionIndexEntry]) {
@@ -33,6 +33,7 @@ pub async fn get_sessions(
             "claude" => claude::get_sessions(&project_id)?,
             "codex" => codex::get_sessions(&project_id)?,
             "grok" => grok::get_sessions(&project_id)?,
+            "dsh" => dsh::get_sessions(&project_id)?,
             "omp" => omp::get_sessions(&project_id)?,
             _ => return Err(format!("Unknown source: {}", source)),
         };
@@ -54,6 +55,7 @@ pub async fn refresh_sessions_cache(
             "claude" => claude::refresh_sessions_cache(&project_id)?,
             "codex" => codex::refresh_sessions_cache(&project_id)?,
             "grok" => grok::refresh_sessions_cache(&project_id)?,
+            "dsh" => dsh::refresh_sessions_cache(&project_id)?,
             "omp" => omp::refresh_sessions_cache(&project_id)?,
             _ => return Err(format!("Unknown source: {}", source)),
         };
@@ -75,6 +77,7 @@ pub async fn get_invalid_sessions(
             "claude" => claude::get_invalid_sessions(&project_id)?,
             "codex" => codex::get_invalid_sessions(&project_id)?,
             "grok" => grok::get_invalid_sessions(&project_id)?,
+            "dsh" => dsh::get_invalid_sessions(&project_id)?,
             "omp" => omp::get_invalid_sessions(&project_id)?,
             _ => return Err(format!("Unknown source: {}", source)),
         };
@@ -103,6 +106,22 @@ pub fn delete_session(
     // to the recycle bin.
     match validate_session_file(&source, &file_path) {
         Ok(path) => {
+            if source == "dsh" {
+                let actual_session = path
+                    .parent()
+                    .and_then(|dir| dir.file_name())
+                    .and_then(|name| name.to_str());
+                let actual_project = path
+                    .parent()
+                    .and_then(|dir| dir.parent())
+                    .and_then(|dir| dir.file_name())
+                    .and_then(|name| name.to_str());
+                if actual_session != Some(session_id.as_str())
+                    || actual_project != Some(project_id.as_str())
+                {
+                    return Err("DeepSeek Harness 会话与所选工作区不匹配".to_string());
+                }
+            }
             if source == "omp" {
                 let metadata = omp::extract_session_meta(&path)
                     .ok_or_else(|| "Failed to read OMP session metadata".to_string())?;
@@ -120,7 +139,7 @@ pub fn delete_session(
             } else {
                 // Claude/Codex sessions are one JSONL file. Grok keeps a session in
                 // a directory, so recycle the validated file's parent as one unit.
-                let recycle_path = if source == "grok" {
+                let recycle_path = if source == "grok" || source == "dsh" {
                     path.parent()
                         .ok_or_else(|| "Invalid Grok session path".to_string())?
                 } else {
@@ -156,6 +175,8 @@ pub fn delete_session(
         codex::invalidate_sessions_cache();
     } else if source == "grok" {
         grok::invalidate_sessions_cache();
+    } else if source == "dsh" {
+        dsh::invalidate_paths(&[]);
     } else if source == "omp" {
         omp::invalidate_sessions_cache();
     }
@@ -192,6 +213,8 @@ pub fn update_session_meta(
             codex::invalidate_sessions_cache();
         } else if source == "grok" {
             grok::invalidate_sessions_cache();
+        } else if source == "dsh" {
+            dsh::invalidate_paths(&[]);
         } else if source == "omp" {
             omp::invalidate_sessions_cache();
         }
@@ -213,6 +236,8 @@ pub fn rename_chat_session(
         codex::invalidate_sessions_cache();
     } else if source == "grok" {
         grok::invalidate_sessions_cache();
+    } else if source == "dsh" {
+        dsh::invalidate_paths(&[]);
     } else if source == "omp" {
         omp::invalidate_sessions_cache();
     }

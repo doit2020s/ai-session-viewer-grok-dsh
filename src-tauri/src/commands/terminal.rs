@@ -26,6 +26,31 @@ fn resume_command(source: &str, session_id: &str) -> Result<String, String> {
     }
 }
 
+/// Resolve the Grok executable explicitly on Windows. Desktop apps launched
+/// from Explorer do not always inherit the user's refreshed PATH, even when
+/// `grok` works in an interactive PowerShell. Prefer GROK_BINARY, then the
+/// official per-user install location, and finally let the shell resolve PATH.
+#[cfg(target_os = "windows")]
+fn grok_command(session_id: &str) -> String {
+    let exe = std::env::var("GROK_BINARY")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .or_else(|| {
+            let home = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))?;
+            let candidate = Path::new(&home).join(".grok").join("bin").join("grok.exe");
+            candidate.exists().then(|| candidate.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "grok".to_string());
+    // The path is local configuration, but quote it for PowerShell/CMD so
+    // installs under a path containing spaces work as well.
+    if exe.contains(' ') {
+        format!("\"{}\" -r {session_id}", exe.replace('"', "\\\""))
+    } else {
+        format!("{exe} -r {session_id}")
+    }
+}
+
 #[tauri::command]
 pub fn resume_session(
     source: String,
@@ -56,7 +81,14 @@ pub fn resume_session(
         }
     }
 
-    let cli_cmd = resume_command(&source, &session_id)?;
+    let cli_cmd = if source == "grok" {
+        #[cfg(target_os = "windows")]
+        { grok_command(&session_id) }
+        #[cfg(not(target_os = "windows"))]
+        { resume_command(&source, &session_id)? }
+    } else {
+        resume_command(&source, &session_id)?
+    };
 
     open_terminal(&project_path, &cli_cmd, shell.as_deref())
 }

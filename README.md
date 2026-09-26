@@ -5,26 +5,33 @@
 </p>
 
 <p align="center">
-  <strong>Claude Code、Codex CLI、Grok CLI 与 Oh My Pi 本地会话的统一可视化浏览器</strong>
+  <strong>Claude Code、Codex CLI、Grok CLI、DeepSeek Harness 与 Oh My Pi 本地会话的统一可视化浏览器</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/zuoliangyu/AI-Session-Viewer/releases">
+  <a href="https://github.com/doit2020s/ai-session-viewer-grok-dsh/releases">
     <img src="https://img.shields.io/github/v/release/zuoliangyu/AI-Session-Viewer?style=flat-square" alt="Release">
   </a>
-  <a href="https://github.com/zuoliangyu/AI-Session-Viewer/actions">
+  <a href="https://github.com/doit2020s/ai-session-viewer-grok-dsh/actions">
     <img src="https://img.shields.io/github/actions/workflow/status/zuoliangyu/AI-Session-Viewer/build.yml?style=flat-square&label=CI" alt="CI">
   </a>
-  <a href="https://github.com/zuoliangyu/AI-Session-Viewer/blob/main/LICENSE">
+  <a href="https://github.com/doit2020s/ai-session-viewer-grok-dsh/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/zuoliangyu/AI-Session-Viewer?style=flat-square" alt="License">
   </a>
 </p>
 
 ---
 
-**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。四种来源均支持浏览、搜索、导出、标签/别名、删除与一键恢复（Resume）；Claude、Codex 和 Oh My Pi 还支持在应用内继续对话。
+**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI、DeepSeek Harness 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。五种来源均支持浏览、搜索、导出、标签/别名与删除。Claude、Codex、Grok 和 Oh My Pi 支持从原生 CLI 恢复会话；Claude、Codex 和 Oh My Pi 还支持在应用内继续对话。DeepSeek Harness 当前提供本地 V3 压缩会话的完整只读展示与管理。
 
 本应用**仅处理本地会话文件**，不上传任何数据；删除、标签、别名等写操作只在用户主动触发时执行。
+
+## 本分支新增功能
+
+- 原生读取 DeepSeek Harness session.v3.jsonl.zstd V3 事件日志。
+- 按 DSH 工作区展示会话标题、用户消息、回答、思考过程和工具调用。
+- DeepSeek 会话支持搜索、导出、别名、标签和回收站删除。
+- Grok 会话支持原生名称识别、终端恢复、上下文编辑与删除，以及直接打开会话目录。
 
 > **What's New（v2.22.0）**：桌面与 Web 均支持 Claude、Codex、Grok、Oh My Pi 四来源 Fork；项目和会话默认使用便利贴式多列卡片，四个 Agent 保持纵向排列并支持在设置中显隐。新增最近浏览，精简阅读工具栏、目录与续聊区域，并适配窄屏导航和深色主题。Grok 分叉后提供续聊命令，Claude、Codex 和 Oh My Pi 可沿用应用内续聊。完整版本历史见 [CHANGELOG.md](./CHANGELOG.md)。
 >
@@ -51,7 +58,7 @@
 
 ### 桌面应用（推荐）
 
-前往 [Releases](https://github.com/zuoliangyu/AI-Session-Viewer/releases) 下载对应平台的安装包：
+前往 [Releases](https://github.com/doit2020s/ai-session-viewer-grok-dsh/releases) 下载对应平台的安装包：
 
 | 平台 | 安装包 |
 |------|--------|
@@ -59,9 +66,9 @@
 | macOS (Universal) | `.dmg`（同时支持 Intel 和 Apple Silicon） |
 | Linux | `.deb` / `.AppImage` |
 
-安装后打开即可使用，应用会自动扫描本地的 Claude / Codex / Grok / Oh My Pi 会话数据。
+安装后打开即可使用，应用会自动扫描本地的 Claude / Codex / Grok / DeepSeek Harness / Oh My Pi 会话数据。
 
-> 前提：至少使用过一种受支持 CLI，对应的 `~/.claude/projects/`、`~/.codex/sessions/`、`$GROK_HOME/sessions/`（默认 `~/.grok/sessions/`）或 Oh My Pi 的 `~/.omp/agent/sessions/` 目录存在。
+> 前提：至少使用过一种受支持 CLI，对应的 `~/.claude/projects/`、`~/.codex/sessions/`、`$GROK_HOME/sessions/`（默认 `~/.grok/sessions/`）、`$DSH_HOME/sessions/`（默认 `~/.dsh/sessions/`）或 Oh My Pi 的 `~/.omp/agent/sessions/` 目录存在。
 
 ### Web 服务器
 
@@ -372,7 +379,7 @@ Skills 页面中的「MCP / 插件」支持比较两个 `session-web` 节点的�
 ### 本地开发
 
 ```bash
-git clone https://github.com/zuoliangyu/AI-Session-Viewer.git
+git clone https://github.com/doit2020s/ai-session-viewer-grok-dsh.git
 cd AI-Session-Viewer
 npm install
 ```

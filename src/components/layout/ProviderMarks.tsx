@@ -48,6 +48,15 @@ export function GrokMark({ className = "" }: ProviderMarkProps) {
   );
 }
 
+export function DshMark({ className = "" }: ProviderMarkProps) {
+  return (
+    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.16" />
+      <path d="M7 6.5h4.4c3.8 0 6.1 2 6.1 5.5s-2.3 5.5-6.1 5.5H7v-11Zm4.2 8.2c2 0 3.1-.9 3.1-2.7s-1.1-2.7-3.1-2.7h-1v5.4h1Z" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function OmpMark({ className = "" }: ProviderMarkProps) {
   return (
     <svg

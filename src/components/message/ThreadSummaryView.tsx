@@ -102,7 +102,7 @@ export const ThreadSummaryView = memo(function ThreadSummaryView({
     () => questions.some((question) => question.parentMessageIndex !== null),
     [questions],
   );
-  const assistantName = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : "Claude";
+  const assistantName = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : "Claude";
 
   const { fork: handleFork, pendingMessageId: forkingMsgId, error: forkError } = useSessionFork(source, filePath);
   const canFork = Boolean(filePath);

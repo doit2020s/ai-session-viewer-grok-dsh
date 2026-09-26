@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::models::message::{DisplayContentBlock, DisplayMessage};
 use crate::paths::validate_session_file;
-use crate::provider::{claude, codex, grok, omp};
+use crate::provider::{claude, codex, dsh, grok, omp};
 
 /// 导出格式。前端以小写字符串传入（json / markdown / html）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -45,6 +45,7 @@ pub fn render_session(
         "claude" => claude::parse_all_messages(&path),
         "codex" => codex::parse_all_messages(&path),
         "grok" => grok::parse_all_messages(&path),
+        "dsh" => dsh::parse_all_messages(&path),
         "omp" => omp::parse_all_messages(&path),
         _ => return Err(format!("Unknown source: {}", source)),
     }?;

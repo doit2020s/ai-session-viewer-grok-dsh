@@ -12,7 +12,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { useAppStore } from "../../stores/appStore";
 import { useChatStore } from "../../stores/chatStore";
-import { ArrowLeft, Play, Copy, Loader2, ArrowDown, ArrowUp, AlertCircle, Tag, Plus, X, Rows3, ChevronsUpDown, Columns2, ListTree, MessageSquare } from "lucide-react";
+import { ArrowLeft, Play, Copy, Loader2, ArrowDown, ArrowUp, AlertCircle, Tag, Plus, X, Rows3, ChevronsUpDown, Columns2, ListTree, MessageSquare, FolderOpen } from "lucide-react";
 import { ActionMenu } from "../common/ActionMenu";
 import { rememberSession } from "../../services/recentSessions";
 import { MessageThread } from "./MessageThread";
@@ -49,7 +49,7 @@ import {
 
 declare const __IS_TAURI__: boolean;
 const USE_TAURI_TRANSPORT = __IS_TAURI__ && !isRemoteNodeActive();
-type MessageSource = "claude" | "codex" | "grok" | "omp";
+type MessageSource = "claude" | "codex" | "grok" | "dsh" | "omp";
 type SplitDirection = "horizontal" | "vertical";
 
 const SPLIT_PANE_MESSAGES_PAGE_SIZE = 50;
@@ -360,9 +360,9 @@ export function MessagesPage() {
   const scrollToMessageId = searchParams.get("scrollTo");
   const matchedOnly = searchParams.get("matchedOnly") === "1";
 
-  // Use React Router's wildcard param (already decoded) instead of manual pathname slicing
-  const rawFilePath = params["*"] || "";
-  const filePath = rawFilePath ? decodeURIComponent(rawFilePath) : "";
+  // React Router decodes the wildcard once. Do not decode again: Grok session
+  // filenames contain literal percent-encoded path segments such as %3A and %E6.
+  const filePath = params["*"] || "";
 
   const {
     source,
@@ -1037,6 +1037,18 @@ export function MessagesPage() {
     }
   };
 
+  const handleOpenSessionFolder = async () => {
+    if (!filePath) return;
+    setResumeError(null);
+    try {
+      await api.openSessionFolder(source, filePath);
+    } catch (err) {
+      const msg = typeof err === "string" ? err : String(err);
+      setResumeError(msg);
+      setTimeout(() => setResumeError(null), 5000);
+    }
+  };
+
   // Auto-scroll when new chat messages arrive
   useEffect(() => {
     if (chatMessages.length > 0 || chatStreaming) {
@@ -1119,6 +1131,7 @@ export function MessagesPage() {
       viewportRef={containerRef}
       priorityMessageId={scrollToMessageId}
       messageOffset={loadedStart}
+      onMessageEdited={() => selectSession(filePath)}
     />
   );
   const measuredMessageThread = PERF_DIAGNOSTICS_ENABLED ? (
@@ -1192,6 +1205,7 @@ export function MessagesPage() {
             <p>会话信息</p>
             {supportsCli && filePath && <div className="px-3 py-2"><SessionCostBadge filePath={filePath} /></div>}
             {resolvedSessionId && <button onClick={() => setEditingSession(true)}><Tag className="h-4 w-4" />编辑标签和别名</button>}
+            {source === "grok" && filePath && __IS_TAURI__ && <button onClick={handleOpenSessionFolder}><FolderOpen className="h-4 w-4" />打开会话目录</button>}
             {supportsResume && <button onClick={handleCopyCommand}><Copy className="h-4 w-4" />{copied ? "已复制" : "复制续聊命令"}</button>}
             {supportsResume && USE_TAURI_TRANSPORT && <button onClick={handleResume}><Play className="h-4 w-4" />在终端打开</button>}
           </ActionMenu>
@@ -1985,6 +1999,8 @@ function assistantNameFromSource(source: MessageSource) {
     ? "Codex"
     : source === "grok"
       ? "Grok"
+      : source === "dsh"
+        ? "DeepSeek"
       : source === "omp"
         ? "Oh My Pi"
         : "Claude";

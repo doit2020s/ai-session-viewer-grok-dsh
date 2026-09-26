@@ -13,7 +13,7 @@ import { ProjectActionsMenu } from "../project/ProjectActionsMenu";
 import { DeleteProjectDialog } from "../project/DeleteProjectDialog";
 import { NodeSelector } from "./NodeSelector";
 import { readRecentSessions, RECENT_SESSIONS_CHANGED } from "../../services/recentSessions";
-import { ClaudeMark, CodexMark, GrokMark, OmpMark } from "./ProviderMarks";
+import { ClaudeMark, CodexMark, DshMark, GrokMark, OmpMark } from "./ProviderMarks";
 import type { ProjectEntry } from "../../types";
 import { collapseDirectBuckets, DIRECT_GROUP_ID } from "../../utils/directChat";
 import {
@@ -55,7 +55,7 @@ import {
 declare const __IS_TAURI__: boolean;
 declare const __APP_VERSION__: string;
 
-type SessionSource = "claude" | "codex" | "grok" | "omp";
+type SessionSource = "claude" | "codex" | "grok" | "dsh" | "omp";
 
 const SOURCE_OPTIONS = [
   {
@@ -75,6 +75,12 @@ const SOURCE_OPTIONS = [
     label: "Grok",
     icon: GrokMark,
     iconClass: "text-foreground",
+  },
+  {
+    id: "dsh",
+    label: "DeepSeek",
+    icon: DshMark,
+    iconClass: "text-[#4D6BFE]",
   },
   {
     id: "omp",

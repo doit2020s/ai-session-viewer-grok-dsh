@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 use std::time::Instant;
 
 use serde_json::json;
@@ -6,7 +7,7 @@ use session_core::models::message::{
     question_index, PaginatedMessages, QuestionIndexEntry, RangeMessages,
 };
 use session_core::paths::validate_session_file;
-use session_core::provider::{claude, codex, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, omp};
 
 use super::perf;
 
@@ -35,6 +36,7 @@ pub async fn get_messages(
             "claude" => claude::parse_session_messages(path, page, page_size, from_end),
             "codex" => codex::parse_session_messages(path, page, page_size, from_end),
             "grok" => grok::parse_session_messages(path, page, page_size, from_end),
+            "dsh" => dsh::parse_session_messages(path, page, page_size, from_end),
             "omp" => omp::parse_session_messages(path, page, page_size, from_end),
             _ => Err(format!("Unknown source: {}", source_for_parse)),
         }
@@ -77,6 +79,66 @@ pub async fn get_messages(
     result
 }
 
+/// Edit a Grok message directly in its JSONL transcript. Other providers keep
+/// their native transcript formats untouched until a provider-specific editor
+/// is implemented.
+#[tauri::command]
+pub async fn edit_message(
+    source: String,
+    file_path: String,
+    message_id: String,
+    text: String,
+) -> Result<(), String> {
+    if source != "grok" {
+        return Err("当前只支持编辑 Grok 会话".to_string());
+    }
+    let path = validate_session_file(&source, &file_path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        grok::edit_message(&path, &message_id, &text)
+    })
+    .await
+    .map_err(|error| format!("消息编辑任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn delete_message(
+    source: String,
+    file_path: String,
+    message_id: String,
+) -> Result<(), String> {
+    if source != "grok" {
+        return Err("当前只支持删除 Grok 会话上下文".to_string());
+    }
+    let path = validate_session_file(&source, &file_path)?;
+    tauri::async_runtime::spawn_blocking(move || grok::delete_message(&path, &message_id))
+        .await
+        .map_err(|error| format!("消息删除任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub fn open_session_folder(source: String, file_path: String) -> Result<(), String> {
+    if source != "grok" {
+        return Err("当前只支持打开 Grok 会话目录".to_string());
+    }
+    let path = validate_session_file(&source, &file_path)?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| "无法确定 Grok 会话目录".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = Command::new("xdg-open");
+
+    command
+        .arg(directory)
+        .spawn()
+        .map_err(|error| format!("打开 Grok 会话目录失败：{error}"))?;
+    Ok(())
+}
+
 /// Load `[start, end)` of messages. Used by the progressive (windowed)
 /// view to grow the loaded range in either direction without going through
 /// the page/from_end gymnastics.
@@ -103,6 +165,7 @@ pub async fn get_messages_range(
             "claude" => claude::parse_messages_range(path, start, end),
             "codex" => codex::parse_messages_range(path, start, end),
             "grok" => grok::parse_messages_range(path, start, end),
+            "dsh" => dsh::parse_messages_range(path, start, end),
             "omp" => omp::parse_messages_range(path, start, end),
             _ => Err(format!("Unknown source: {}", source_for_parse)),
         }
@@ -158,6 +221,7 @@ pub async fn get_question_index(
             "claude" => claude::parse_all_messages(&path),
             "codex" => codex::parse_all_messages(&path),
             "grok" => grok::parse_all_messages(&path),
+            "dsh" => dsh::parse_all_messages(&path),
             "omp" => omp::parse_all_messages(&path),
             _ => Err(format!("Unknown source: {source_for_parse}")),
         }?;
