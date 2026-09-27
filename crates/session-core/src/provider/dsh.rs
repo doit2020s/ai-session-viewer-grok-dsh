@@ -21,7 +21,7 @@ pub fn get_sessions_dir() -> Option<PathBuf> {
         .map(|home| home.join("sessions"))
 }
 
-fn decode_rows(path: &Path) -> Result<Vec<Value>, String> {
+pub(crate) fn decode_rows(path: &Path) -> Result<Vec<Value>, String> {
     let file = fs::File::open(path).map_err(|error| format!("打开 DSH 会话失败：{error}"))?;
     let decoded = zstd::stream::decode_all(file)
         .map_err(|error| format!("解压 DSH 会话失败：{error}"))?;

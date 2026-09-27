@@ -25,7 +25,7 @@ export function useSessionFork(source: string, filePath?: string) {
     try {
       const { result, warning } = await createSessionFork(
         api, source, filePath, messageId,
-        __IS_TAURI__ && !isRemoteNodeActive(), terminalShell,
+        __IS_TAURI__ && !isRemoteNodeActive() && ["claude", "codex", "grok", "omp"].includes(source), terminalShell,
       );
       if (getApiBaseUrl() !== nodeUrl || useAppStore.getState().source !== source) return;
       // Refresh is independent of creation: a refresh failure cannot invite

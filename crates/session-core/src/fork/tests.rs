@@ -168,6 +168,82 @@ fn grok_fork_keeps_raw_tools_context_and_rewrites_summary() {
 }
 
 #[test]
+fn dsh_fork_recompresses_history_through_selected_round() {
+    let fixture = Fixture::new();
+    let original = fixture.0.join("workspace").join("session-old");
+    fs::create_dir_all(&original).unwrap();
+    let path = original.join("session.v3.jsonl.zstd");
+    let rows = vec![
+        json!({"type":"session","version":3,"id":"session-old","createdAt":1000,"cwd":"C:\\work"}),
+        json!({"type":"user/message","seq":1,"time":2000,"data":{"id":"u1","content":[{"type":"text","text":"first"}]}}),
+        json!({"type":"assistant/message","seq":2,"time":3000,"data":{"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
+        json!({"type":"user/message","seq":3,"time":4000,"data":{"id":"u2","content":[{"type":"text","text":"future"}]}}),
+    ];
+    let file = fs::File::create(&path).unwrap();
+    let mut encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
+    encoder.write_all(&jsonl(&rows)).unwrap();
+    encoder.finish().unwrap();
+    fs::write(original.join("attachment.txt"), "owned").unwrap();
+
+    let parsed = read_records_for_kind(SessionSourceKind::Dsh, &path).unwrap();
+    let target = target_index(SessionSourceKind::Dsh, &parsed, "u1").unwrap();
+    let fork = fork_files(SessionSourceKind::Dsh, &path, &parsed, target).unwrap();
+    assert_eq!(fork.project_id, "workspace");
+    let new_path = Path::new(&fork.new_file_path);
+    let messages = dsh::parse_all_messages(new_path).unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].uuid.as_deref(), Some("u1"));
+    assert!(new_path.parent().unwrap().join("attachment.txt").is_file());
+    let new_rows = dsh::decode_rows(new_path).unwrap();
+    assert_eq!(new_rows[0]["id"], fork.new_session_id);
+    assert_eq!(new_rows[0]["parentSession"], "session-old");
+    assert_eq!(dsh::parse_all_messages(&path).unwrap().len(), 3);
+}
+
+#[test]
+fn kiro_fork_preserves_configuration_snapshots_and_selected_round() {
+    let fixture = Fixture::new();
+    let original = fixture.0.join("workspace").join("sess_old");
+    fs::create_dir_all(original.join("snapshots/checkpoint")).unwrap();
+    let path = original.join("messages.jsonl");
+    let rows = vec![
+        json!({"id":"u1","timestamp":"2026-01-01T00:00:00Z","payload":{"type":"user","content":"first"}}),
+        json!({"id":"a1","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"assistant","content":"answer"}}),
+        json!({"id":"u2","timestamp":"2026-01-01T00:00:02Z","payload":{"type":"user","content":"future"}}),
+    ];
+    fs::write(&path, jsonl(&rows)).unwrap();
+    fs::write(
+        original.join("session.json"),
+        json!({"id":"sess_old","title":"Original","workspacePaths":["C:\\work"],"modelId":"model","status":"idle"}).to_string(),
+    )
+    .unwrap();
+    fs::write(original.join("snapshots/checkpoint/file.txt"), "snapshot").unwrap();
+    fs::write(original.join("publish.cursor"), "old cursor").unwrap();
+
+    let parsed = read_records_for_kind(SessionSourceKind::Kiro, &path).unwrap();
+    let target = target_index(SessionSourceKind::Kiro, &parsed, "u1").unwrap();
+    let fork = fork_files(SessionSourceKind::Kiro, &path, &parsed, target).unwrap();
+    assert_eq!(fork.project_id, "workspace");
+    let new_path = Path::new(&fork.new_file_path);
+    let messages = kiro::parse_all_messages(new_path).unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].uuid.as_deref(), Some("u1"));
+    let metadata: Value = serde_json::from_slice(
+        &fs::read(new_path.with_file_name("session.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata["id"], fork.new_session_id);
+    assert_eq!(metadata["title"], "Original（分叉）");
+    assert!(new_path
+        .parent()
+        .unwrap()
+        .join("snapshots/checkpoint/file.txt")
+        .is_file());
+    assert!(!new_path.parent().unwrap().join("publish.cursor").exists());
+    assert_eq!(kiro::parse_all_messages(&path).unwrap().len(), 3);
+}
+
+#[test]
 fn stale_selection_and_missing_ancestry_fail_without_creating_files() {
     let row = json!({"type":"user","content":"before"});
     let old_id = line_message_id(2, &row);

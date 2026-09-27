@@ -105,7 +105,7 @@ export const ThreadSummaryView = memo(function ThreadSummaryView({
   const assistantName = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : source === "kiro" ? "Kiro" : "Claude";
 
   const { fork: handleFork, pendingMessageId: forkingMsgId, error: forkError } = useSessionFork(source, filePath);
-  const canFork = Boolean(filePath) && source !== "dsh" && source !== "kiro";
+  const canFork = Boolean(filePath);
 
   if (items.length === 0) {
     return (

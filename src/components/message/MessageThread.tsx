@@ -446,7 +446,7 @@ export const MessageThread = memo(function MessageThread({
       console.error("Failed to resume session:", err);
     }
   };
-  const showActionButtons = Boolean(filePath) && source !== "dsh" && source !== "kiro";
+  const showActionButtons = Boolean(filePath);
   const canEdit = source === "grok" && __IS_TAURI__ && Boolean(filePath);
   const openEditor = (message: DisplayMessage) => {
     if (!message.uuid) return;
@@ -619,7 +619,7 @@ export const MessageThread = memo(function MessageThread({
                 ) : (
                   <GitFork className="h-3.5 w-3.5" />
                 )}
-                {isForking ? "分叉中…" : "Fork 分叉"}
+                {isForking ? "分叉中…" : "从此处分叉"}
               </button>
             )}
             {canEdit && msg.uuid && (

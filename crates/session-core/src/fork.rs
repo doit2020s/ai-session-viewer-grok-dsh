@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Cursor, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,17 @@ fn read_records(path: &Path) -> Result<Vec<Record>, String> {
     Ok(rows)
 }
 
+fn read_records_for_kind(kind: SessionSourceKind, path: &Path) -> Result<Vec<Record>, String> {
+    if kind == SessionSourceKind::Dsh {
+        return Ok(dsh::decode_rows(path)?
+            .into_iter()
+            .enumerate()
+            .map(|(line, value)| Record { line, value })
+            .collect());
+    }
+    read_records(path)
+}
+
 fn string<'a>(row: &'a Value, key: &str) -> Option<&'a str> {
     row.get(key).and_then(Value::as_str)
 }
@@ -89,7 +100,10 @@ fn is_user(kind: SessionSourceKind, row: &Value) -> bool {
             string(row, "type") == Some("user")
                 && row.get("synthetic_reason").is_none_or(Value::is_null)
         }
-        SessionSourceKind::Dsh | SessionSourceKind::Kiro => false,
+        SessionSourceKind::Dsh => string(row, "type") == Some("user/message"),
+        SessionSourceKind::Kiro => {
+            row.pointer("/payload/type").and_then(Value::as_str) == Some("user")
+        }
         SessionSourceKind::Omp => {
             string(row, "type") == Some("message")
                 && row.pointer("/message/role").and_then(Value::as_str) == Some("user")
@@ -102,7 +116,20 @@ fn target_index(kind: SessionSourceKind, rows: &[Record], target: &str) -> Resul
         .position(|record| {
             let id = match kind {
                 SessionSourceKind::Claude => string(&record.value, "uuid").map(str::to_owned),
-                SessionSourceKind::Omp => string(&record.value, "id").map(str::to_owned),
+                SessionSourceKind::Omp | SessionSourceKind::Kiro => {
+                    string(&record.value, "id").map(str::to_owned)
+                }
+                SessionSourceKind::Dsh => record
+                    .value
+                    .pointer("/data/id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        record
+                            .value
+                            .get("seq")
+                            .map(|seq| format!("dsh-{seq}"))
+                    }),
                 _ => Some(line_message_id(record.line, &record.value)),
             };
             id.as_deref() == Some(target) && is_user(kind, &record.value)
@@ -282,6 +309,168 @@ fn register_claude_fork(
     Ok(())
 }
 
+fn copy_session_extras(
+    source: &Path,
+    destination: &Path,
+    skipped_names: &[&str],
+) -> Result<(), String> {
+    fs::create_dir(destination).map_err(|e| format!("创建分叉暂存目录失败：{e}"))?;
+    let result = (|| {
+        for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .is_some_and(|name| skipped_names.contains(&name))
+            {
+                continue;
+            }
+            let ty = entry.file_type().map_err(|e| e.to_string())?;
+            let target = destination.join(&name);
+            if ty.is_dir() {
+                copy_directory(&entry.path(), &target)?;
+            } else if ty.is_file() {
+                fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
+            } else {
+                return Err("会话目录包含链接，无法安全分叉".to_string());
+            }
+        }
+        Ok::<_, String>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    result
+}
+
+fn publish_directory_fork(staging: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() {
+        let _ = fs::remove_dir_all(staging);
+        return Err("分叉目标已存在，请重试".to_string());
+    }
+    if let Err(error) = fs::rename(staging, destination) {
+        let _ = fs::remove_dir_all(staging);
+        return Err(format!("发布分叉会话失败：{error}"));
+    }
+    Ok(())
+}
+
+fn fork_dsh(path: &Path, rows: &[Record], target: usize) -> Result<ForkResult, String> {
+    let mut history = history_through_round(SessionSourceKind::Dsh, rows, target)?;
+    let header = history
+        .iter_mut()
+        .find(|row| string(row, "type") == Some("session"))
+        .ok_or("DeepSeek Harness 会话头缺失")?;
+    let project = string(header, "cwd")
+        .ok_or("DeepSeek Harness 会话缺少 cwd")?
+        .to_string();
+    let old_id = string(header, "id")
+        .ok_or("DeepSeek Harness 会话缺少 id")?
+        .to_string();
+    let id = format!("session-{}", uuid::Uuid::new_v4());
+    header["id"] = json!(id);
+    header["createdAt"] = json!(chrono::Utc::now().timestamp_millis());
+    header["parentSession"] = json!(old_id);
+
+    let source_dir = path.parent().ok_or("DeepSeek Harness 会话目录不存在")?;
+    let project_dir = source_dir
+        .parent()
+        .ok_or("DeepSeek Harness 工作区目录不存在")?;
+    let project_id = project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("DeepSeek Harness 工作区标识无效")?
+        .to_string();
+    let destination = project_dir.join(&id);
+    let staging = project_dir.join(format!(".{id}.fork-tmp"));
+    copy_session_extras(source_dir, &staging, &["session.v3.jsonl.zstd"])?;
+    let compressed = zstd::stream::encode_all(Cursor::new(jsonl(&history)), 3)
+        .map_err(|e| format!("压缩 DeepSeek Harness 分叉失败：{e}"));
+    let result = compressed.and_then(|bytes| {
+        write_new(&staging.join("session.v3.jsonl.zstd"), &bytes)?;
+        publish_directory_fork(&staging, &destination)
+    });
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    Ok(ForkResult {
+        new_session_id: id,
+        new_file_path: destination
+            .join("session.v3.jsonl.zstd")
+            .to_string_lossy()
+            .into_owned(),
+        project_path: project,
+        project_id,
+    })
+}
+
+fn fork_kiro(path: &Path, rows: &[Record], target: usize) -> Result<ForkResult, String> {
+    if path.file_name().and_then(|name| name.to_str()) != Some("messages.jsonl") {
+        return Err("Kiro 会话缺少 messages.jsonl，无法从历史消息分叉".to_string());
+    }
+    let history = history_through_round(SessionSourceKind::Kiro, rows, target)?;
+    let source_dir = path.parent().ok_or("Kiro 会话目录不存在")?;
+    let project_dir = source_dir.parent().ok_or("Kiro 工作区目录不存在")?;
+    let project_id = project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Kiro 工作区标识无效")?
+        .to_string();
+    let mut metadata: Value = serde_json::from_slice(
+        &fs::read(source_dir.join("session.json"))
+            .map_err(|e| format!("读取 Kiro 会话配置失败：{e}"))?,
+    )
+    .map_err(|e| format!("Kiro 会话配置损坏：{e}"))?;
+    let project = metadata
+        .get("workspacePaths")
+        .and_then(Value::as_array)
+        .and_then(|paths| paths.iter().find_map(Value::as_str))
+        .unwrap_or_default()
+        .to_string();
+    let id = format!("sess_{}", uuid::Uuid::new_v4());
+    let now = chrono::Utc::now().to_rfc3339();
+    metadata["id"] = json!(id);
+    metadata["createdAt"] = json!(now);
+    metadata["lastModifiedAt"] = json!(now);
+    metadata["status"] = json!("idle");
+    if let Some(title) = metadata.get("title").and_then(Value::as_str) {
+        metadata["title"] = json!(format!("{title}（分叉）"));
+    }
+    metadata["description"] = json!("从历史对话记录创建的分叉");
+
+    let destination = project_dir.join(&id);
+    let staging = project_dir.join(format!(".{id}.fork-tmp"));
+    copy_session_extras(
+        source_dir,
+        &staging,
+        &["messages.jsonl", "session.json", "publish.cursor"],
+    )?;
+    let result = (|| {
+        write_new(&staging.join("messages.jsonl"), &jsonl(&history))?;
+        write_new(
+            &staging.join("session.json"),
+            serde_json::to_vec_pretty(&metadata)
+                .map_err(|e| e.to_string())?
+                .as_slice(),
+        )?;
+        publish_directory_fork(&staging, &destination)
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    Ok(ForkResult {
+        new_session_id: id,
+        new_file_path: destination
+            .join("messages.jsonl")
+            .to_string_lossy()
+            .into_owned(),
+        project_path: project,
+        project_id,
+    })
+}
+
 fn fork_files(
     kind: SessionSourceKind,
     path: &Path,
@@ -406,8 +595,8 @@ fn fork_files(
             });
         }
         SessionSourceKind::Codex => return Err("Codex 分叉必须通过原生协议创建".to_string()),
-        SessionSourceKind::Dsh => return Err("DeepSeek Harness 会话暂不支持分叉".to_string()),
-        SessionSourceKind::Kiro => return Err("Kiro 会话暂不支持分叉".to_string()),
+        SessionSourceKind::Dsh => return fork_dsh(path, rows, target),
+        SessionSourceKind::Kiro => return fork_kiro(path, rows, target),
     };
     let staging = new_path.with_extension("fork-tmp");
     let artifacts = new_path.with_extension("");
@@ -456,12 +645,9 @@ fn fork_files(
 
 pub async fn fork_session(request: ForkRequest) -> Result<ForkResult, String> {
     let kind = SessionSourceKind::parse(&request.source)?;
-    if matches!(kind, SessionSourceKind::Dsh | SessionSourceKind::Kiro) {
-        return Err("该会话来源暂不支持分叉".to_string());
-    }
     let (path, rows, target) = tokio::task::spawn_blocking(move || {
         let path = validate_session_file(&request.source, &request.original_file_path)?;
-        let rows = read_records(&path)?;
+        let rows = read_records_for_kind(kind, &path)?;
         let target = target_index(kind, &rows, &request.user_msg_uuid)?;
         Ok::<_, String>((path, rows, target))
     })
