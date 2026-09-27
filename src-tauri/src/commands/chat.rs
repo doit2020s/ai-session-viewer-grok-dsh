@@ -123,6 +123,7 @@ pub async fn start_chat(
         model: &model,
         skip_permissions,
         resume_session_id: None,
+        new_session_id: (source == "grok").then_some(session_id.as_str()),
         credentials: &credentials,
     })?;
 
@@ -181,6 +182,7 @@ pub async fn continue_chat(
         model: &model,
         skip_permissions,
         resume_session_id: Some(&resume_target),
+        new_session_id: None,
         credentials: &credentials,
     })?;
 
@@ -495,6 +497,7 @@ struct BuildChatCommandParams<'a> {
     model: &'a str,
     skip_permissions: bool,
     resume_session_id: Option<&'a str>,
+    new_session_id: Option<&'a str>,
     credentials: &'a cli_config::ResolvedCliCredentials,
 }
 
@@ -507,6 +510,7 @@ fn build_chat_command(params: BuildChatCommandParams<'_>) -> Result<Command, Str
         model,
         skip_permissions,
         resume_session_id,
+        new_session_id,
         credentials,
     } = params;
 
@@ -526,6 +530,24 @@ fn build_chat_command(params: BuildChatCommandParams<'_>) -> Result<Command, Str
         }
         // Codex requires a git repo; skip the check so it works in any directory
         cmd.arg("--skip-git-repo-check");
+    } else if source == "grok" {
+        // Grok's Anthropic-compatible NDJSON stream can be rendered by the
+        // same frontend message pipeline while Grok remains the authority for
+        // persistence, context, tools and resume behavior.
+        if let Some(sid) = resume_session_id {
+            cmd.arg("--resume").arg(sid);
+        } else if let Some(sid) = new_session_id {
+            cmd.arg("--session-id").arg(sid);
+        }
+        cmd.arg("--single").arg(prompt);
+        cmd.arg("--output-format").arg("streaming-messages-json");
+        cmd.arg("--include-partial-messages");
+        if !model.is_empty() {
+            cmd.arg("--model").arg(model);
+        }
+        if skip_permissions {
+            cmd.arg("--permission-mode").arg("bypassPermissions");
+        }
     } else if source == "omp" {
         // OMP print mode emits a JSONL event stream and persists the session.
         if let Some(sid) = resume_session_id {
@@ -567,7 +589,7 @@ fn build_chat_command(params: BuildChatCommandParams<'_>) -> Result<Command, Str
 
     // Claude/Codex use a whitelist to avoid inheriting conflicting session
     // variables. OMP must retain profile, XDG and provider-specific settings.
-    if source != "omp" {
+    if source != "omp" && source != "grok" {
         cmd.env_clear();
         for key in &[
             "PATH",
@@ -667,7 +689,7 @@ fn apply_provider_env(
     source: &str,
     credentials: &cli_config::ResolvedCliCredentials,
 ) {
-    if source == "omp" {
+    if source == "omp" || source == "grok" {
         return;
     }
     for key in &[
@@ -803,5 +825,61 @@ fn kill_process(pid: u32) {
         unsafe {
             libc::kill(pid as i32, libc::SIGKILL);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_chat_command, BuildChatCommandParams};
+    use session_core::cli_config::ResolvedCliCredentials;
+
+    fn args(command: &tokio::process::Command) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn grok_new_chat_uses_native_session_and_stream_format() {
+        let credentials = ResolvedCliCredentials::default();
+        let command = build_chat_command(BuildChatCommandParams {
+            cli_path: "grok",
+            source: "grok",
+            project_path: std::env::temp_dir().to_string_lossy().as_ref(),
+            prompt: "hello",
+            model: "",
+            skip_permissions: false,
+            resume_session_id: None,
+            new_session_id: Some("4024e3d5-aa8b-4748-ba04-e6380bb594d3"),
+            credentials: &credentials,
+        })
+        .unwrap();
+        let actual = args(&command);
+        assert!(actual.windows(2).any(|pair| pair == ["--session-id", "4024e3d5-aa8b-4748-ba04-e6380bb594d3"]));
+        assert!(actual.windows(2).any(|pair| pair == ["--output-format", "streaming-messages-json"]));
+        assert!(actual.windows(2).any(|pair| pair == ["--single", "hello"]));
+    }
+
+    #[test]
+    fn grok_continue_chat_resumes_same_native_session() {
+        let credentials = ResolvedCliCredentials::default();
+        let command = build_chat_command(BuildChatCommandParams {
+            cli_path: "grok",
+            source: "grok",
+            project_path: std::env::temp_dir().to_string_lossy().as_ref(),
+            prompt: "continue",
+            model: "grok-4.6",
+            skip_permissions: true,
+            resume_session_id: Some("4024e3d5-aa8b-4748-ba04-e6380bb594d3"),
+            new_session_id: None,
+            credentials: &credentials,
+        })
+        .unwrap();
+        let actual = args(&command);
+        assert!(actual.windows(2).any(|pair| pair == ["--resume", "4024e3d5-aa8b-4748-ba04-e6380bb594d3"]));
+        assert!(actual.windows(2).any(|pair| pair == ["--model", "grok-4.6"]));
+        assert!(actual.windows(2).any(|pair| pair == ["--permission-mode", "bypassPermissions"]));
     }
 }

@@ -8,7 +8,7 @@ import type {
 } from "../types/chat";
 import { api } from "../services/api";
 
-type ChatSource = "claude" | "codex" | "omp";
+type ChatSource = "claude" | "codex" | "grok" | "omp";
 
 export const DEFAULT_CHAT_PANE_ID = "default";
 
@@ -306,6 +306,9 @@ function getSourceOverrides(
   >,
   source: ChatSource
 ): { apiKey?: string; baseUrl?: string } {
+  if (source === "grok" || source === "omp") {
+    return {};
+  }
   const apiKey =
     source === "codex" ? state.codexApiKeyOverride : state.claudeApiKeyOverride;
   const baseUrl =
@@ -434,6 +437,7 @@ function parseClaudeStreamLine(line: string): ParseResult {
     const text =
       data.result ||
       data.error ||
+      (Array.isArray(data.errors) ? data.errors.join("\n") : "") ||
       (data.is_error ? "Error" : "Done");
     const durationInfo = data.duration_ms
       ? ` (${(data.duration_ms / 1000).toFixed(1)}s)`
@@ -1070,7 +1074,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       const customKey = `chat_customModels_${source}`;
       const customIds: string[] = JSON.parse(localStorage.getItem(customKey) || "[]");
       const existingIds = new Set(models.map((m) => m.id));
-      const provider = source === "codex" ? "openai" : source === "omp" ? "omp" : "anthropic";
+      const provider = source === "codex" ? "openai" : source === "grok" ? "xai" : source === "omp" ? "omp" : "anthropic";
       const customModels: ModelInfo[] = customIds
         .filter((id) => !existingIds.has(id))
         .map((id) => ({ id, name: id, provider, group: "自定义", created: null }));
@@ -1172,7 +1176,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         prompt,
         model,
         skipPermissions: state.skipPermissions,
-        cliPath: state.cliPath || undefined,
+        // The saved override predates Grok support and may point at a Claude
+        // shim. Always use Grok's own discovery path for Grok conversations.
+        cliPath: pane.source === "grok" ? undefined : state.cliPath || undefined,
         ...overrides,
       });
       if (sessionId !== pendingSessionId) {
@@ -1227,7 +1233,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         prompt,
         model,
         skipPermissions: state.skipPermissions,
-        cliPath: state.cliPath || undefined,
+        cliPath: pane.source === "grok" ? undefined : state.cliPath || undefined,
         ...overrides,
       });
     } catch (e) {
@@ -1291,7 +1297,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     const customModel = {
       id: modelId,
       name: modelId,
-      provider: src === "codex" ? "openai" : "anthropic",
+      provider: src === "codex" ? "openai" : src === "grok" ? "xai" : src === "omp" ? "omp" : "anthropic",
       group: "自定义",
       created: null,
     } satisfies ModelInfo;
@@ -1598,7 +1604,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (data.type === "result") {
         const extras: Partial<ChatPaneState> = { isStreaming: false };
         if (data.is_error || data.error) {
-          extras.error = data.error || data.result || "Unknown error";
+          extras.error = data.error || data.result || (Array.isArray(data.errors) ? data.errors.join("\n") : "Unknown error");
         }
         get().setPaneState(paneId, extras);
       }

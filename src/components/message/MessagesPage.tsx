@@ -413,8 +413,8 @@ export function MessagesPage() {
       refreshInBackground: state.refreshInBackground,
     })),
   );
-  const supportsCli = source === "claude" || source === "codex" || source === "omp";
-  const supportsResume = supportsCli || source === "grok";
+  const supportsCli = source === "claude" || source === "codex" || source === "grok" || source === "omp";
+  const supportsResume = supportsCli;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -506,9 +506,9 @@ export function MessagesPage() {
   // Sync source from appStore into chatStore, then refresh model list
   useEffect(() => {
     setActivePane(mainPaneId);
-    if (source === "claude" || source === "codex" || source === "omp") {
+    if (source === "claude" || source === "codex" || source === "grok" || source === "omp") {
       setPaneSource(mainPaneId, source);
-      fetchChatModelList(mainPaneId);
+      if (source !== "grok") fetchChatModelList(mainPaneId);
     }
   }, [fetchChatModelList, mainPaneId, setActivePane, setPaneSource, source]);
 
@@ -1737,7 +1737,7 @@ function SplitSessionPane({
   }, [loadMessages]);
 
   useEffect(() => {
-    if (source === "claude" || source === "codex" || source === "omp") {
+    if (source === "claude" || source === "codex" || source === "grok" || source === "omp") {
       setPaneSource(paneId, source);
     }
   }, [paneId, setPaneSource, source]);

@@ -22,7 +22,7 @@
 
 ---
 
-**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI、DeepSeek Harness、Kiro 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。六种来源均支持浏览、搜索、导出、标签/别名与删除。Claude、Codex、Grok 和 Oh My Pi 支持从原生 CLI 恢复会话；Claude、Codex 和 Oh My Pi 还支持在应用内继续对话。DeepSeek Harness 当前提供本地 V3 压缩会话的完整只读展示与管理。
+**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI、DeepSeek Harness、Kiro 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。六种来源均支持浏览、搜索、导出、标签/别名与删除。Claude、Codex、Grok 和 Oh My Pi 支持从原生 CLI 恢复会话，并可在应用内新建或继续对话。DeepSeek Harness 当前提供本地 V3 压缩会话的完整只读展示与管理。
 
 本应用**仅处理本地会话文件**，不上传任何数据；删除、标签、别名等写操作只在用户主动触发时执行。
 
@@ -32,7 +32,7 @@
 - 原生读取 Kiro `session.json` 与 `messages.jsonl`，保留标题、工作区、模型和工具调用。
 - 按 DSH 工作区展示会话标题、用户消息、回答、思考过程和工具调用。
 - DeepSeek 会话支持搜索、导出、别名、标签和回收站删除。
-- Grok 会话支持原生名称识别、新建原生 CLI 会话、终端恢复、上下文编辑与删除，以及直接打开会话目录。
+- Grok 会话支持原生名称识别、应用内新建并继续原生 CLI 会话、终端恢复、上下文编辑与删除，以及直接打开会话目录。
 - 会话页支持批量打包原始会话文件为 ZIP，并将整包还原到当前工作区；适合跨电脑、跨工作区迁移，重复 ID 自动跳过。
 - 删除会话时会同时处理该会话专属的附件、快照、工具结果和状态文件；桌面端作为一个回收站条目整体删除与还原。
 - 删除工作文件夹时会递归处理提供商保存的整个会话工作区目录及其中全部会话产物，并作为一个回收站条目整体还原；不会删除实际项目或源码目录。
@@ -241,7 +241,7 @@ environment:
 
 选中会话一键在系统终端恢复（Claude → `claude --resume {id}`，Codex → `codex resume {id}`，Grok → `grok -r {id}`，Oh My Pi → `omp --resume {id}`）。终端独立于本应用，关闭 Viewer 后继续运行。Windows / macOS / Linux 均支持，自动适配各平台终端。
 
-Grok 项目的会话列表右上角提供“新建 Grok 会话”。桌面端为当前项目生成新 UUID，并在该项目目录执行原生 `grok --session-id {id}`；会话文件、上下文和元数据全部由 Grok CLI 创建，发送第一条消息后自动进入会话列表。
+切换到 Grok 后，侧边栏提供与 Claude、Codex 一致的“新建对话”入口。选择工作目录并发送第一条消息后，应用以原生 `grok --session-id {id} --single ... --output-format streaming-messages-json` 启动会话；后续消息使用 `grok --resume {id}`。回复在应用内实时展示，会话文件、上下文、工具状态和元数据仍全部由 Grok CLI 管理。
 
 ### 会话分叉（Fork）
 
@@ -257,7 +257,7 @@ Grok 项目的会话列表右上角提供“新建 Grok 会话”。桌面端为
 
 桌面本地模式创建分叉后打开系统终端，同时跳转到新会话。如果终端打开失败，已创建的新会话仍然保留，页面提示使用“恢复”按钮重试，无需再次分叉。
 
-Web 模式和桌面连接远程节点时，分叉在会话所在服务器创建，成功后直接打开新会话。Claude、Codex 和 OMP 可通过现有应用内聊天继续对话（服务器需安装对应 CLI）；Grok 提供续聊命令，请在服务器的对应项目目录执行。Grok 本次不包含应用内聊天。
+Web 模式和桌面连接远程节点时，分叉在会话所在服务器创建，成功后直接打开新会话。Claude、Codex、Grok 和 OMP 可通过现有应用内聊天继续对话（服务器需安装对应 CLI）。
 
 Codex 使用本机/服务器上的 `codex app-server` 原生 `thread/fork`，按持久化轮次定位分叉点，并核对新会话的历史边界。旧版 CLI 忽略指定轮次参数时，仅对新分叉执行原生回退并再次验证；无法可靠定位的记录会明确报错，请刷新会话或升级 CLI。回退记录在原始日志中保留，消息视图不会将已回退的轮次作为有效历史展示。
 
@@ -305,13 +305,13 @@ Web API：`POST /api/sessions/fork`，JSON 请求为 `{ source, originalFilePath
 
 ### CLI 对话
 
-侧边栏「新建对话」进入，选工作目录后即可在应用内直接和 Claude Code、Codex CLI 或 Oh My Pi 对话，无需切到终端；入口按当前数据源自动检测对应 CLI 是否已安装。
+侧边栏「新建对话」进入，选工作目录后即可在应用内直接和 Claude Code、Codex CLI、Grok CLI 或 Oh My Pi 对话，无需切到终端；入口按当前数据源自动检测对应 CLI 是否已安装。
 
 - 流式输出，实时渲染 AI 回复（Markdown + 代码高亮）
 - **工具调用专用查看器**：Read（高亮 + 行号）、Edit（Diff）、Write（预览）、Bash（终端风格）、Grep/Glob
 - 对话按轮次分组（显示轮次编号与 token 用量），header 累计 token、每条消息分项明细
 - 超过 30 轮自动虚拟滚动，长对话不卡
-- 支持续聊已有 Claude、Codex 与 Oh My Pi 会话（消息详情页「继续对话」入口）
+- 支持续聊已有 Claude、Codex、Grok 与 Oh My Pi 会话（消息详情页「继续对话」入口）
 - 自动记住上次模型、续聊历史会话时自动匹配原会话模型；`/model` 或 `Ctrl+K` 切换模型
 
 ### Skills 浏览 / 导入 / 删除
@@ -565,7 +565,7 @@ Web 服务器暴露以下 REST API，可供自定义客户端调用：
 - [x] 关于作者信息弹窗
 - [x] 会话标签与别名系统 + 跨项目标签筛选
 - [x] 全局搜索会话分组模式 + 应用内使用说明
-- [x] 应用内 CLI 对话（Claude `--resume` / Codex `app-server` / Oh My Pi print mode 续聊）
+- [x] 应用内 CLI 对话（Claude `--resume` / Codex `app-server` / Grok `--resume` / Oh My Pi print mode 续聊）
 - [x] CLI 配置自动检测（API Key / Base URL / 默认模型）
 - [x] 工具调用专用查看器（Read/Edit/Write/Bash/Grep/Glob）
 - [x] 对话轮次分组 + Token 详细统计 + 虚拟化滚动

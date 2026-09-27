@@ -3,6 +3,7 @@ export function isActualChatError(line: string): boolean {
   if (!lower) return false;
   if (lower.startsWith("[request interrupted")) return false;
   if (lower.startsWith("warning:")) return false;
+  if (/\bwarn\b/.test(lower)) return false;
   if (lower.startsWith("info:")) return false;
   if (lower.startsWith("debug:")) return false;
   if (lower.includes("error") || lower.includes("fatal") || lower.includes("panic")) return true;

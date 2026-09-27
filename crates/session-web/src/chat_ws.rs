@@ -18,7 +18,7 @@ use session_core::codex_app_server::CodexAppServer;
 #[serde(rename_all = "camelCase")]
 struct ChatRequest {
     action: String,         // "start" | "continue" | "cancel"
-    source: Option<String>, // "claude" | "codex"
+    source: Option<String>, // "claude" | "codex" | "grok" | "omp"
     project_path: Option<String>,
     prompt: Option<String>,
     model: Option<String>,
@@ -52,6 +52,8 @@ fn canonicalize_existing_dir(path: &str) -> Result<PathBuf, String> {
 fn allowed_project_roots(source: &str) -> Result<Vec<PathBuf>, String> {
     let projects = if source == "codex" {
         session_core::provider::codex::get_projects()
+    } else if source == "grok" {
+        session_core::provider::grok::get_projects()
     } else if source == "omp" {
         session_core::provider::omp::get_projects()
     } else {
@@ -372,8 +374,14 @@ async fn run_cli_process(
     });
     if let Some(resume_target) = resume_target.as_deref() {
         cmd.arg("--resume").arg(resume_target);
+    } else if source == "grok" {
+        cmd.arg("--session-id").arg(&routing_id);
     }
-    cmd.arg("-p").arg(prompt);
+    if source == "grok" {
+        cmd.arg("--single").arg(prompt);
+    } else {
+        cmd.arg("-p").arg(prompt);
+    }
     if !model.is_empty() {
         if source == "claude" {
             let cli_model = model.strip_suffix("-latest").unwrap_or(model);
@@ -382,7 +390,13 @@ async fn run_cli_process(
             cmd.arg("--model").arg(model);
         }
     }
-    if source == "omp" {
+    if source == "grok" {
+        cmd.arg("--output-format").arg("streaming-messages-json");
+        cmd.arg("--include-partial-messages");
+        if skip_permissions {
+            cmd.arg("--permission-mode").arg("bypassPermissions");
+        }
+    } else if source == "omp" {
         cmd.arg("--mode").arg("json");
         cmd.arg("--no-pty");
         if skip_permissions {
@@ -738,7 +752,7 @@ fn compose_chat_path(cmd: &mut Command, cli_path: &str) -> Result<(), String> {
 }
 
 fn apply_provider_env(cmd: &mut Command, source: &str, credentials: &ResolvedCliCredentials) {
-    if source == "omp" {
+    if source == "omp" || source == "grok" {
         return;
     }
     for key in &[

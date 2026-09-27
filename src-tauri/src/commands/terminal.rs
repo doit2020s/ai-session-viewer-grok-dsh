@@ -51,59 +51,6 @@ fn grok_command(session_id: &str) -> String {
     }
 }
 
-/// Start a brand-new native Grok CLI conversation. The CLI receives a fresh
-/// UUID and remains responsible for creating every session file and metadata
-/// directory, so the resulting conversation has exactly the same format as a
-/// session created directly in Grok.
-fn grok_new_command(session_id: &str) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        let exe = std::env::var("GROK_BINARY")
-            .ok()
-            .filter(|p| !p.trim().is_empty())
-            .or_else(|| {
-                let home = std::env::var_os("USERPROFILE")
-                    .or_else(|| std::env::var_os("HOME"))?;
-                let candidate = Path::new(&home).join(".grok").join("bin").join("grok.exe");
-                candidate.exists().then(|| candidate.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| "grok".to_string());
-        if exe.contains(' ') {
-            format!("\"{}\" --session-id {session_id}", exe.replace('"', "\\\""))
-        } else {
-            format!("{exe} --session-id {session_id}")
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        format!("grok --session-id {session_id}")
-    }
-}
-
-#[tauri::command]
-pub fn create_grok_session(
-    project_path: String,
-    shell: Option<String>,
-) -> Result<String, String> {
-    let canonical = Path::new(&project_path)
-        .canonicalize()
-        .map_err(|e| format!("Grok 项目路径不可用: {project_path}: {e}"))?;
-    if !canonical.is_dir() {
-        return Err(format!("Grok 项目路径不是文件夹: {project_path}"));
-    }
-
-    // Generate the id in the trusted backend because it is included in the
-    // terminal command line. validate_session_id documents and enforces the
-    // same shell-safety boundary used by resume_session.
-    let session_id = uuid::Uuid::new_v4().to_string();
-    validate_session_id(&session_id)?;
-    let cli_cmd = grok_new_command(&session_id);
-    let canonical = canonical.to_string_lossy().into_owned();
-    open_terminal(&canonical, &cli_cmd, shell.as_deref())?;
-    Ok(session_id)
-}
-
 #[tauri::command]
 pub fn resume_session(
     source: String,
@@ -397,7 +344,7 @@ fn normalize_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{grok_new_command, resume_command};
+    use super::resume_command;
 
     #[test]
     fn builds_omp_resume_command() {
@@ -405,13 +352,5 @@ mod tests {
             resume_command("omp", "01a066c5-490b-77e1-be17-dd879255a46f").unwrap(),
             "omp --resume 01a066c5-490b-77e1-be17-dd879255a46f"
         );
-    }
-
-    #[test]
-    fn builds_native_grok_new_session_command() {
-        let id = "e81cc406-b872-4b34-9c1a-aefe92364fb0";
-        let command = grok_new_command(id);
-        assert!(command.ends_with(&format!("--session-id {id}")));
-        assert!(!command.contains(" -r "));
     }
 }

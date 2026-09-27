@@ -118,9 +118,9 @@ pub fn read_cli_config(source: &str) -> Result<CliConfig, String> {
     if source == "codex" {
         return read_codex_cli_config();
     }
-    if source == "omp" {
+    if source == "omp" || source == "grok" {
         return Ok(CliConfig {
-            source: "omp".to_string(),
+            source: source.to_string(),
             ..Default::default()
         });
     }
@@ -144,7 +144,7 @@ pub fn resolve_credentials(
     base_url_override: Option<&str>,
 ) -> Result<ResolvedCliCredentials, String> {
     let source = crate::cli::normalize_source(source)?;
-    if source == "omp" {
+    if source == "omp" || source == "grok" {
         return Ok(ResolvedCliCredentials {
             api_key: api_key_override.unwrap_or_default().trim().to_owned(),
             base_url: base_url_override.unwrap_or_default().trim().to_owned(),

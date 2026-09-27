@@ -4,7 +4,7 @@ import { DEFAULT_CHAT_PANE_ID, useChatStore } from "../../stores/chatStore";
 import { useAppStore } from "../../stores/appStore";
 import { ModelSelector } from "./ModelSelector";
 import { api } from "../../services/api";
-import { OmpMark } from "../layout/ProviderMarks";
+import { GrokMark, OmpMark } from "../layout/ProviderMarks";
 export interface ChatInputHandle {
   /** Insert the given text as a markdown blockquote at the current cursor position, focusing the textarea. */
   insertQuote: (text: string) => void;
@@ -167,7 +167,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
   }, [text]);
 
-  const modelDisplay = model ? shortModelName(model) : "选择模型";
+  const modelDisplay = model ? shortModelName(model) : source === "grok" ? "CLI 默认模型" : "选择模型";
 
   return (
     <>
@@ -180,7 +180,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             className="flex items-center gap-1.5 px-2 py-1 text-xs rounded-md border border-border bg-muted hover:bg-accent/50 transition-colors disabled:opacity-50"
             title={model || "选择模型 (Ctrl+K)"}
           >
-            {source === "omp" ? <OmpMark className="w-3.5 h-3.5" /> : <Bot className={`w-3 h-3 ${source === "codex" ? "text-green-500" : "text-orange-500"}`} />}
+            {source === "omp" ? <OmpMark className="w-3.5 h-3.5" /> : source === "grok" ? <GrokMark className="w-3.5 h-3.5" /> : <Bot className={`w-3 h-3 ${source === "codex" ? "text-green-500" : "text-orange-500"}`} />}
             <span className="max-w-[12rem] truncate text-foreground">{modelDisplay}</span>
             <ChevronDown className="w-3 h-3 text-muted-foreground" />
           </button>

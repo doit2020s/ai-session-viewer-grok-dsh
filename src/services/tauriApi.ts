@@ -344,13 +344,6 @@ export async function resumeSession(
   return invoke<void>("resume_session", { source, sessionId, projectPath, filePath, shell });
 }
 
-export async function createGrokSession(
-  projectPath: string,
-  shell?: string,
-): Promise<string> {
-  return invoke<string>("create_grok_session", { projectPath, shell });
-}
-
 export interface ForkResult {
   newSessionId: string;
   newFilePath: string;

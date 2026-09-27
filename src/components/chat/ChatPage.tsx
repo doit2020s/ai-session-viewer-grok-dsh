@@ -9,7 +9,7 @@ import { StreamingMessage, getLinkedToolUseIds } from "./StreamingMessage";
 import { FolderSelector } from "./FolderSelector";
 import { MessageSquarePlus, AlertCircle, Bot } from "lucide-react";
 import type { ChatMessage } from "../../types/chat";
-import { OmpMark } from "../layout/ProviderMarks";
+import { GrokMark, OmpMark } from "../layout/ProviderMarks";
 import { ExpandAllProvider } from "../common/ExpandAllContext";
 import { useReplyNotification } from "../../hooks/useReplyNotification";
 import { normalizeToolName } from "./tool-viewers/ToolViewers";
@@ -347,7 +347,7 @@ export function ChatPage({ paneId = DEFAULT_CHAT_PANE_ID }: ChatPageProps) {
   const { isActive, sessionId, projectPath, model, messages, isStreaming, error, source } = pane;
 
   const appSource = useAppStore((s) => s.source);
-  const cliLabel = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : "Claude";
+  const cliLabel = source === "codex" ? "Codex" : source === "grok" ? "Grok" : source === "omp" ? "Oh My Pi" : "Claude";
   const activeSessionId = urlSessionId ?? sessionId ?? null;
 
   useEffect(() => {
@@ -356,7 +356,7 @@ export function ChatPage({ paneId = DEFAULT_CHAT_PANE_ID }: ChatPageProps) {
 
   // Sync source from appStore into the target pane
   useEffect(() => {
-    if (appSource !== "claude" && appSource !== "codex" && appSource !== "omp") {
+    if (appSource !== "claude" && appSource !== "codex" && appSource !== "grok" && appSource !== "omp") {
       return;
     }
     setPaneSource(paneId, appSource);
@@ -697,7 +697,7 @@ function EmptyState({
             {cliLabel} CLI
           </label>
           <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted border border-border">
-            {cliLabel === "Oh My Pi" ? <OmpMark className="w-4 h-4" /> : <Bot className={`w-4 h-4 ${cliLabel === "Codex" ? "text-green-500" : "text-orange-500"}`} />}
+            {cliLabel === "Oh My Pi" ? <OmpMark className="w-4 h-4" /> : cliLabel === "Grok" ? <GrokMark className="w-4 h-4" /> : <Bot className={`w-4 h-4 ${cliLabel === "Codex" ? "text-green-500" : "text-orange-500"}`} />}
             <span className="text-sm font-medium">{cliLabel}</span>
             <span className={`ml-auto text-xs ${cliAvailable ? "text-green-500" : "text-red-400"}`}>
               {cliAvailable ? "已安装" : "未检测到"}

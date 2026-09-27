@@ -22,7 +22,7 @@ fn hide_console(cmd: &mut Command) -> &mut Command {
 pub struct CliInstallation {
     pub path: String,
     pub version: Option<String>,
-    pub cli_type: String, // "claude" | "codex" | "omp"
+    pub cli_type: String, // "claude" | "codex" | "grok" | "omp"
 }
 
 /// Normalize a source name to the supported CLI types.
@@ -32,6 +32,8 @@ pub fn normalize_source(source: &str) -> Result<&'static str, String> {
         Ok("claude")
     } else if trimmed.eq_ignore_ascii_case("codex") {
         Ok("codex")
+    } else if trimmed.eq_ignore_ascii_case("grok") {
+        Ok("grok")
     } else if trimmed.eq_ignore_ascii_case("omp") || trimmed.eq_ignore_ascii_case("oh-my-pi") {
         Ok("omp")
     } else {
@@ -39,11 +41,13 @@ pub fn normalize_source(source: &str) -> Result<&'static str, String> {
     }
 }
 
-/// Find a CLI binary path by source name ("claude", "codex", or "omp").
+/// Find a CLI binary path by source name.
 pub fn find_cli(cli_type: &str) -> Result<String, String> {
     match normalize_source(cli_type)? {
         "codex" => find_codex()
             .ok_or_else(|| "Codex CLI not found. Run: npm install -g @openai/codex".to_string()),
+        "grok" => find_grok()
+            .ok_or_else(|| "Grok CLI not found. Install or configure Grok CLI first".to_string()),
         "omp" => find_omp()
             .ok_or_else(|| "Oh My Pi CLI not found. Install it from https://omp.sh".to_string()),
         "claude" => {
@@ -60,6 +64,29 @@ pub fn find_cli(cli_type: &str) -> Result<String, String> {
         }
         _ => unreachable!(),
     }
+}
+
+/// Find the native Grok CLI. Explorer-launched desktop processes frequently
+/// have a stale PATH on Windows, so include Grok's official per-user path.
+fn find_grok() -> Option<String> {
+    if let Ok(path) = std::env::var("GROK_BINARY") {
+        if !path.trim().is_empty() && PathBuf::from(&path).exists() {
+            return Some(path);
+        }
+    }
+    if let Some(path) = which_binary("grok") {
+        return Some(path);
+    }
+    let home = dirs::home_dir()?;
+    let candidates = if cfg!(windows) {
+        vec![home.join(".grok/bin/grok.exe")]
+    } else {
+        vec![home.join(".grok/bin/grok"), home.join(".local/bin/grok")]
+    };
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 /// Find the Oh My Pi CLI binary.
@@ -155,7 +182,7 @@ pub fn find_node() -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
-/// Discover installed CLIs (Claude + Codex).
+/// Discover installed CLIs available to the in-app chat harness.
 pub fn discover_installations() -> Vec<CliInstallation> {
     let mut installations = Vec::new();
 
@@ -174,6 +201,14 @@ pub fn discover_installations() -> Vec<CliInstallation> {
             path,
             version,
             cli_type: "codex".to_string(),
+        });
+    }
+    if let Some(path) = find_grok() {
+        let version = get_cli_version(&path);
+        installations.push(CliInstallation {
+            path,
+            version,
+            cli_type: "grok".to_string(),
         });
     }
     if let Some(path) = find_omp() {

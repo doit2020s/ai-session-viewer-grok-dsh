@@ -16,7 +16,7 @@ import { cleanMessageText, wrapAsciiArt } from "../message/utils";
 import { useExpandAllControl } from "../common/ExpandAllContext";
 import { useAppStore } from "../../stores/appStore";
 import { formatDateTime } from "../../utils/dateTime";
-import { OmpMark } from "../layout/ProviderMarks";
+import { GrokMark, OmpMark } from "../layout/ProviderMarks";
 
 interface Props {
   message: ChatMessage;
@@ -368,14 +368,14 @@ function AssistantMsg({
   timeZone: string;
 }) {
   const { blocks: displayBlocks } = getToolDisplayState(message.content, toolResultMap);
-  const assistantName = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : "Claude";
-  const iconColor = source === "codex" ? "text-green-500" : source === "omp" ? "text-fuchsia-500" : "text-orange-500";
-  const iconBg = source === "codex" ? "bg-green-500/10" : source === "omp" ? "bg-fuchsia-500/10" : "bg-orange-500/10";
+  const assistantName = source === "codex" ? "Codex" : source === "grok" ? "Grok" : source === "omp" ? "Oh My Pi" : "Claude";
+  const iconColor = source === "codex" ? "text-green-500" : source === "grok" ? "text-foreground" : source === "omp" ? "text-fuchsia-500" : "text-orange-500";
+  const iconBg = source === "codex" ? "bg-green-500/10" : source === "grok" ? "bg-foreground/10" : source === "omp" ? "bg-fuchsia-500/10" : "bg-orange-500/10";
 
   return (
     <div className="flex gap-3">
       <div className={`shrink-0 w-7 h-7 rounded-full ${iconBg} flex items-center justify-center mt-0.5`}>
-        {source === "omp" ? <OmpMark className="w-4 h-4" /> : <Bot className={`w-3.5 h-3.5 ${iconColor}`} />}
+        {source === "omp" ? <OmpMark className="w-4 h-4" /> : source === "grok" ? <GrokMark className="w-4 h-4" /> : <Bot className={`w-3.5 h-3.5 ${iconColor}`} />}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2 mb-1">
