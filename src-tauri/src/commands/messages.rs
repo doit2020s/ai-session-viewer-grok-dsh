@@ -7,7 +7,7 @@ use session_core::models::message::{
     question_index, PaginatedMessages, QuestionIndexEntry, RangeMessages,
 };
 use session_core::paths::validate_session_file;
-use session_core::provider::{claude, codex, dsh, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 
 use super::perf;
 
@@ -37,6 +37,7 @@ pub async fn get_messages(
             "codex" => codex::parse_session_messages(path, page, page_size, from_end),
             "grok" => grok::parse_session_messages(path, page, page_size, from_end),
             "dsh" => dsh::parse_session_messages(path, page, page_size, from_end),
+            "kiro" => kiro::parse_session_messages(path, page, page_size, from_end),
             "omp" => omp::parse_session_messages(path, page, page_size, from_end),
             _ => Err(format!("Unknown source: {}", source_for_parse)),
         }
@@ -93,11 +94,9 @@ pub async fn edit_message(
         return Err("当前只支持编辑 Grok 会话".to_string());
     }
     let path = validate_session_file(&source, &file_path)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        grok::edit_message(&path, &message_id, &text)
-    })
-    .await
-    .map_err(|error| format!("消息编辑任务失败: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || grok::edit_message(&path, &message_id, &text))
+        .await
+        .map_err(|error| format!("消息编辑任务失败: {error}"))?
 }
 
 #[tauri::command]
@@ -166,6 +165,7 @@ pub async fn get_messages_range(
             "codex" => codex::parse_messages_range(path, start, end),
             "grok" => grok::parse_messages_range(path, start, end),
             "dsh" => dsh::parse_messages_range(path, start, end),
+            "kiro" => kiro::parse_messages_range(path, start, end),
             "omp" => omp::parse_messages_range(path, start, end),
             _ => Err(format!("Unknown source: {}", source_for_parse)),
         }
@@ -222,6 +222,7 @@ pub async fn get_question_index(
             "codex" => codex::parse_all_messages(&path),
             "grok" => grok::parse_all_messages(&path),
             "dsh" => dsh::parse_all_messages(&path),
+            "kiro" => kiro::parse_all_messages(&path),
             "omp" => omp::parse_all_messages(&path),
             _ => Err(format!("Unknown source: {source_for_parse}")),
         }?;

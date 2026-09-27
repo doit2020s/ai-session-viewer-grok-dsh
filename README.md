@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Claude Code、Codex CLI、Grok CLI、DeepSeek Harness 与 Oh My Pi 本地会话的统一可视化浏览器</strong>
+  <strong>Claude Code、Codex CLI、Grok CLI、DeepSeek Harness、Kiro 与 Oh My Pi 本地会话的统一可视化浏览器</strong>
 </p>
 
 <p align="center">
@@ -22,13 +22,14 @@
 
 ---
 
-**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI、DeepSeek Harness 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。五种来源均支持浏览、搜索、导出、标签/别名与删除。Claude、Codex、Grok 和 Oh My Pi 支持从原生 CLI 恢复会话；Claude、Codex 和 Oh My Pi 还支持在应用内继续对话。DeepSeek Harness 当前提供本地 V3 压缩会话的完整只读展示与管理。
+**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI、DeepSeek Harness、Kiro 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。六种来源均支持浏览、搜索、导出、标签/别名与删除。Claude、Codex、Grok 和 Oh My Pi 支持从原生 CLI 恢复会话；Claude、Codex 和 Oh My Pi 还支持在应用内继续对话。DeepSeek Harness 当前提供本地 V3 压缩会话的完整只读展示与管理。
 
 本应用**仅处理本地会话文件**，不上传任何数据；删除、标签、别名等写操作只在用户主动触发时执行。
 
 ## 本分支新增功能
 
 - 原生读取 DeepSeek Harness session.v3.jsonl.zstd V3 事件日志。
+- 原生读取 Kiro `session.json` 与 `messages.jsonl`，保留标题、工作区、模型和工具调用。
 - 按 DSH 工作区展示会话标题、用户消息、回答、思考过程和工具调用。
 - DeepSeek 会话支持搜索、导出、别名、标签和回收站删除。
 - Grok 会话支持原生名称识别、终端恢复、上下文编辑与删除，以及直接打开会话目录。
@@ -66,9 +67,9 @@
 | macOS (Universal) | `.dmg`（同时支持 Intel 和 Apple Silicon） |
 | Linux | `.deb` / `.AppImage` |
 
-安装后打开即可使用，应用会自动扫描本地的 Claude / Codex / Grok / DeepSeek Harness / Oh My Pi 会话数据。
+安装后打开即可使用，应用会自动扫描本地的 Claude / Codex / Grok / DeepSeek Harness / Kiro / Oh My Pi 会话数据。
 
-> 前提：至少使用过一种受支持 CLI，对应的 `~/.claude/projects/`、`~/.codex/sessions/`、`$GROK_HOME/sessions/`（默认 `~/.grok/sessions/`）、`$DSH_HOME/sessions/`（默认 `~/.dsh/sessions/`）或 Oh My Pi 的 `~/.omp/agent/sessions/` 目录存在。
+> 前提：至少使用过一种受支持 CLI，对应的 `~/.claude/projects/`、`~/.codex/sessions/`、`$GROK_HOME/sessions/`（默认 `~/.grok/sessions/`）、`$DSH_HOME/sessions/`（默认 `~/.dsh/sessions/`）、`$KIRO_HOME/sessions/`（默认 `~/.kiro/sessions/`）或 Oh My Pi 的 `~/.omp/agent/sessions/` 目录存在。
 
 ### Web 服务器
 
@@ -154,20 +155,22 @@ environment:
 
 ## 功能特性
 
-### 四数据源
+### 六数据源
 
-侧边栏顶部以纵向品牌导航直接展示 Claude / Codex / Grok / Oh My Pi，点击即可切换；切换时会立即清理上一数据源状态并显示加载进度，不会短暂展示旧项目或误报“0 个项目”。机器/节点选择器位于来源列表下方的独立层级。
+侧边栏顶部以纵向品牌导航直接展示 Claude / Codex / Grok / DeepSeek / Kiro / Oh My Pi，点击即可切换；切换时会立即清理上一数据源状态并显示加载进度，不会短暂展示旧项目或误报“0 个项目”。机器/节点选择器位于来源列表下方的独立层级。
 
 | 数据源 | CLI 工具 | 本地数据 | 特色内容块 |
 |--------|---------|---------|-----------|
 | **Claude** | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `~/.claude/projects/` | Thinking、工具调用 |
 | **Codex** | [Codex CLI](https://github.com/openai/codex) | `~/.codex/sessions/` | Reasoning、函数调用 |
 | **Grok** | Grok CLI | `$GROK_HOME/sessions/` 或 `~/.grok/sessions/` | Reasoning、文本消息 |
+| **DeepSeek** | DeepSeek Harness | `$DSH_HOME/sessions/` 或 `~/.dsh/sessions/` | Reasoning、工具调用、工具结果 |
+| **Kiro** | Kiro | `$KIRO_HOME/sessions/` 或 `~/.kiro/sessions/` | 文本、工具调用、工具结果 |
 | **Oh My Pi** | [Oh My Pi](https://github.com/can1357/oh-my-pi) | `~/.omp/agent/sessions/` 或已初始化的 `$XDG_DATA_HOME/omp/.../sessions/` | Thinking、工具调用、工具结果 |
 
 ### 界面与导航
 
-- 侧栏保留 Claude、Codex、Grok、Oh My Pi 四个纵向入口；在「设置 → 显示设置 → 侧栏显示的 Agent」中选择显示哪些来源，至少保留一个。隐藏当前来源时会切换到其他可见来源，不删除任何数据。
+- 侧栏保留 Claude、Codex、Grok、DeepSeek、Kiro、Oh My Pi 六个纵向入口；在「设置 → 显示设置 → 侧栏显示的 Agent」中选择显示哪些来源，至少保留一个。隐藏当前来源时会切换到其他可见来源，不删除任何数据。
 - 主要导航为所有项目、搜索会话、收藏与使用统计；Skills、无效项管理、回收站、Provider 同步集中到侧栏底部的「工具与管理」。节点选择仍在来源下方。
 - 侧栏提供项目筛选和最近浏览。最近浏览保存在当前浏览器/桌面 WebView 的本地存储，按机器节点隔离，并仅显示当前来源最近的 5 条记录。
 - 项目和会话默认使用便利贴式卡片网格，一排展示多个条目；可切换为列表并分别记住选择。项目、会话和搜索页的标签筛选按需展开。统计页优先展示会话数、请求数、费用与总 Token，其余 Token 与缓存数字在明细中展开。

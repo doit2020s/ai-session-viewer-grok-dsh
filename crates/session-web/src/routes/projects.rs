@@ -4,7 +4,7 @@ use axum::response::Json;
 use serde::Deserialize;
 use session_core::models::project::ProjectEntry;
 use session_core::provider::claude::{DeleteLevel, DeleteResult};
-use session_core::provider::{claude, codex, dsh, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 
 #[derive(Deserialize)]
 pub struct ProjectsQuery {
@@ -23,11 +23,13 @@ pub async fn get_projects(
         ("codex", true) => codex::rebuild_projects_cache(),
         ("grok", true) => grok::rebuild_projects_cache(),
         ("dsh", true) => dsh::rebuild_projects_cache(),
+        ("kiro", true) => kiro::rebuild_projects_cache(),
         ("omp", true) => omp::rebuild_projects_cache(),
         ("claude", false) => claude::get_projects(),
         ("codex", false) => codex::get_projects(),
         ("grok", false) => grok::get_projects(),
         ("dsh", false) => dsh::get_projects(),
+        ("kiro", false) => kiro::get_projects(),
         ("omp", false) => omp::get_projects(),
         _ => Err(format!("Unknown source: {}", source)),
     })

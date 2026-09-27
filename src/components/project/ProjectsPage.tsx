@@ -140,6 +140,8 @@ export function ProjectsPage() {
           ? "未找到任何 Grok 项目。请确认 ~/.grok/sessions/ 目录存在。"
           : source === "dsh"
             ? "未找到任何 DeepSeek Harness 工作区。请确认 ~/.dsh/sessions/ 目录存在。"
+          : source === "kiro"
+            ? "未找到任何 Kiro 工作区。请确认 ~/.kiro/sessions/ 目录存在。"
           : "未找到任何 Oh My Pi 项目。请确认 ~/.omp/agent/sessions/ 目录存在。";
 
   const selectedProjects = filteredProjects.filter((p) => selected.has(p.id));

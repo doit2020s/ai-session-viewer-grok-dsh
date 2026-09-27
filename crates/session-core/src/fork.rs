@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::paths::{validate_session_file, SessionSourceKind};
-use crate::provider::{claude, codex, dsh, grok, omp};
+use crate::provider::{claude, codex, dsh, grok, kiro, omp};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,7 +89,7 @@ fn is_user(kind: SessionSourceKind, row: &Value) -> bool {
             string(row, "type") == Some("user")
                 && row.get("synthetic_reason").is_none_or(Value::is_null)
         }
-        SessionSourceKind::Dsh => false,
+        SessionSourceKind::Dsh | SessionSourceKind::Kiro => false,
         SessionSourceKind::Omp => {
             string(row, "type") == Some("message")
                 && row.pointer("/message/role").and_then(Value::as_str) == Some("user")
@@ -407,6 +407,7 @@ fn fork_files(
         }
         SessionSourceKind::Codex => return Err("Codex 分叉必须通过原生协议创建".to_string()),
         SessionSourceKind::Dsh => return Err("DeepSeek Harness 会话暂不支持分叉".to_string()),
+        SessionSourceKind::Kiro => return Err("Kiro 会话暂不支持分叉".to_string()),
     };
     let staging = new_path.with_extension("fork-tmp");
     let artifacts = new_path.with_extension("");
@@ -455,8 +456,8 @@ fn fork_files(
 
 pub async fn fork_session(request: ForkRequest) -> Result<ForkResult, String> {
     let kind = SessionSourceKind::parse(&request.source)?;
-    if kind == SessionSourceKind::Dsh {
-        return Err("DeepSeek Harness 会话暂不支持分叉".to_string());
+    if matches!(kind, SessionSourceKind::Dsh | SessionSourceKind::Kiro) {
+        return Err("该会话来源暂不支持分叉".to_string());
     }
     let (path, rows, target) = tokio::task::spawn_blocking(move || {
         let path = validate_session_file(&request.source, &request.original_file_path)?;
@@ -480,6 +481,7 @@ pub async fn fork_session(request: ForkRequest) -> Result<ForkResult, String> {
             SessionSourceKind::Codex => codex::invalidate_paths(&changed),
             SessionSourceKind::Grok => grok::invalidate_paths(&changed),
             SessionSourceKind::Dsh => dsh::invalidate_paths(&changed),
+            SessionSourceKind::Kiro => kiro::invalidate_paths(&changed),
             SessionSourceKind::Omp => omp::invalidate_paths(&changed),
         }
         result

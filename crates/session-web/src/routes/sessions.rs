@@ -4,7 +4,7 @@ use axum::response::Json;
 use serde::Deserialize;
 use session_core::metadata;
 use session_core::models::session::SessionIndexEntry;
-use session_core::provider::{claude, codex, dsh, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 
 use crate::{resolve_claude_project_dir, resolve_session_file_path, SessionSource};
 
@@ -59,6 +59,7 @@ pub async fn get_sessions(
             "codex" => codex::get_sessions(&project_id)?,
             "grok" => grok::get_sessions(&project_id)?,
             "dsh" => dsh::get_sessions(&project_id)?,
+            "kiro" => kiro::get_sessions(&project_id)?,
             "omp" => omp::get_sessions(&project_id)?,
             _ => return Err(format!("Unknown source: {}", source)),
         };
@@ -91,6 +92,7 @@ pub async fn get_invalid_sessions(
             "codex" => codex::get_invalid_sessions(&project_id)?,
             "grok" => grok::get_invalid_sessions(&project_id)?,
             "dsh" => dsh::get_invalid_sessions(&project_id)?,
+            "kiro" => kiro::get_invalid_sessions(&project_id)?,
             "omp" => omp::get_invalid_sessions(&project_id)?,
             _ => return Err(format!("Unknown source: {}", source)),
         };
@@ -145,6 +147,7 @@ pub async fn delete_session(
                 SessionSource::Codex => codex::invalidate_sessions_cache(),
                 SessionSource::Grok => grok::invalidate_sessions_cache(),
                 SessionSource::Dsh => dsh::invalidate_paths(&[]),
+                SessionSource::Kiro => kiro::invalidate_paths(&[]),
                 SessionSource::Omp => omp::invalidate_sessions_cache(),
             }
             return Ok(Json(()));
@@ -251,12 +254,39 @@ pub async fn delete_session(
                 .and_then(|dir| dir.parent())
                 .and_then(|dir| dir.file_name())
                 .and_then(|name| name.to_str());
-            if session_id.as_deref().is_some_and(|id| actual_session != Some(id))
-                || project_id.as_deref().is_some_and(|id| actual_project != Some(id))
+            if session_id
+                .as_deref()
+                .is_some_and(|id| actual_session != Some(id))
+                || project_id
+                    .as_deref()
+                    .is_some_and(|id| actual_project != Some(id))
             {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     "DeepSeek Harness session does not match the requested workspace".to_string(),
+                ));
+            }
+        }
+        SessionSource::Kiro => {
+            let actual_session = resolved_path
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str());
+            let actual_project = resolved_path
+                .parent()
+                .and_then(|dir| dir.parent())
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str());
+            if session_id
+                .as_deref()
+                .is_some_and(|id| actual_session != Some(id))
+                || project_id
+                    .as_deref()
+                    .is_some_and(|id| actual_project != Some(id))
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Kiro session does not match the requested workspace".to_string(),
                 ));
             }
         }
@@ -287,7 +317,7 @@ pub async fn delete_session(
     }
 
     tokio::task::spawn_blocking(move || {
-        if source == "grok" || source == "dsh" {
+        if source == "grok" || source == "dsh" || source == "kiro" {
             let session_dir = resolved_path
                 .parent()
                 .ok_or_else(|| "Invalid directory-backed session path".to_string())?;

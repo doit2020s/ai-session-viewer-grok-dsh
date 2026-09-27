@@ -30,7 +30,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   layout = "default",
 }: Props) {
   const timeZone = useAppStore((state) => state.timeZone);
-  const assistantName = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : "Claude";
+  const assistantName = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : source === "kiro" ? "Kiro" : "Claude";
   const iconColor = source === "codex" ? "text-green-500" : source === "omp" ? "text-fuchsia-500" : "text-orange-500";
   const iconBg = source === "codex" ? "bg-green-500/10" : source === "omp" ? "bg-fuchsia-500/10" : "bg-orange-500/10";
   const [copied, setCopied] = useState(false);

@@ -13,7 +13,7 @@ import { ProjectActionsMenu } from "../project/ProjectActionsMenu";
 import { DeleteProjectDialog } from "../project/DeleteProjectDialog";
 import { NodeSelector } from "./NodeSelector";
 import { readRecentSessions, RECENT_SESSIONS_CHANGED } from "../../services/recentSessions";
-import { ClaudeMark, CodexMark, DshMark, GrokMark, OmpMark } from "./ProviderMarks";
+import { ClaudeMark, CodexMark, DshMark, GrokMark, KiroMark, OmpMark } from "./ProviderMarks";
 import type { ProjectEntry } from "../../types";
 import { collapseDirectBuckets, DIRECT_GROUP_ID } from "../../utils/directChat";
 import {
@@ -55,7 +55,7 @@ import {
 declare const __IS_TAURI__: boolean;
 declare const __APP_VERSION__: string;
 
-type SessionSource = "claude" | "codex" | "grok" | "dsh" | "omp";
+type SessionSource = "claude" | "codex" | "grok" | "dsh" | "kiro" | "omp";
 
 const SOURCE_OPTIONS = [
   {
@@ -81,6 +81,12 @@ const SOURCE_OPTIONS = [
     label: "DeepSeek",
     icon: DshMark,
     iconClass: "text-[#4D6BFE]",
+  },
+  {
+    id: "kiro",
+    label: "Kiro",
+    icon: KiroMark,
+    iconClass: "text-[#7C5CFC]",
   },
   {
     id: "omp",
@@ -233,7 +239,7 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto p-2">
         <div className="mb-4 space-y-1">
-          {source !== "grok" && <button onClick={() => { clearChat(); navigate("/chat"); }} className="mb-3 flex w-full items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"><MessageSquarePlus className="h-4 w-4" />新建对话</button>}
+          {!(["grok", "dsh", "kiro"] as SessionSource[]).includes(source) && <button onClick={() => { clearChat(); navigate("/chat"); }} className="mb-3 flex w-full items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"><MessageSquarePlus className="h-4 w-4" />新建对话</button>}
           {[
             { path: "/projects", label: "所有项目", icon: FolderOpen },
             { path: "/search", label: "搜索会话", icon: Search },

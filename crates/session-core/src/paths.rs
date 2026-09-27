@@ -19,6 +19,7 @@ use crate::parser::path_encoder::get_projects_dir;
 use crate::provider::codex;
 use crate::provider::dsh;
 use crate::provider::grok;
+use crate::provider::kiro;
 use crate::provider::omp;
 
 /// A supported session source carried over the wire.
@@ -28,6 +29,7 @@ pub enum SessionSourceKind {
     Codex,
     Grok,
     Dsh,
+    Kiro,
     Omp,
 }
 
@@ -38,6 +40,7 @@ impl SessionSourceKind {
             "codex" => Ok(Self::Codex),
             "grok" => Ok(Self::Grok),
             "dsh" => Ok(Self::Dsh),
+            "kiro" => Ok(Self::Kiro),
             "omp" => Ok(Self::Omp),
             _ => Err(format!("Unknown source: {}", source)),
         }
@@ -83,6 +86,12 @@ fn canonical_dsh_root() -> Result<PathBuf, String> {
     let path = dsh::get_sessions_dir()
         .ok_or_else(|| "Could not find DeepSeek Harness sessions directory".to_string())?;
     canonicalize_dir(path, "DeepSeek Harness sessions directory")
+}
+
+fn canonical_kiro_root() -> Result<PathBuf, String> {
+    let path = kiro::get_sessions_dir()
+        .ok_or_else(|| "Could not find Kiro sessions directory".to_string())?;
+    canonicalize_dir(path, "Kiro sessions directory")
 }
 
 fn canonical_omp_root() -> Result<PathBuf, String> {
@@ -157,16 +166,40 @@ fn validate_grok_layout(path: &Path, base: &Path) -> Result<(), String> {
 }
 
 fn validate_dsh_layout(path: &Path, base: &Path) -> Result<(), String> {
-    let relative = path
-        .strip_prefix(base)
-        .map_err(|_| "Session file is outside the DeepSeek Harness sessions directory".to_string())?;
+    let relative = path.strip_prefix(base).map_err(|_| {
+        "Session file is outside the DeepSeek Harness sessions directory".to_string()
+    })?;
     let components: Vec<_> = relative.components().collect();
     if components.len() != 3
-        || components.iter().any(|component| !matches!(component, Component::Normal(_)))
+        || components
+            .iter()
+            .any(|component| !matches!(component, Component::Normal(_)))
         || path.file_name().and_then(|name| name.to_str()) != Some("session.v3.jsonl.zstd")
     {
         return Err(
             "DeepSeek Harness session file must be sessions/<workspace>/<session-id>/session.v3.jsonl.zstd"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_kiro_layout(path: &Path, base: &Path) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(base)
+        .map_err(|_| "Session file is outside the Kiro sessions directory".to_string())?;
+    let components: Vec<_> = relative.components().collect();
+    if components.len() != 3
+        || components
+            .iter()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        || !matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("messages.jsonl" | "session.json")
+        )
+    {
+        return Err(
+            "Kiro session file must be sessions/<workspace>/<session-id>/{messages.jsonl,session.json}"
                 .to_string(),
         );
     }
@@ -212,7 +245,7 @@ pub fn validate_session_file(source: &str, file_path: &str) -> Result<PathBuf, S
     if !canonical.is_file() {
         return Err(format!("Session file not found: {}", file_path));
     }
-    if kind != SessionSourceKind::Dsh
+    if !matches!(kind, SessionSourceKind::Dsh | SessionSourceKind::Kiro)
         && canonical.extension().and_then(|ext| ext.to_str()) != Some("jsonl")
     {
         return Err("Session file must be a .jsonl file".to_string());
@@ -238,6 +271,10 @@ pub fn validate_session_file(source: &str, file_path: &str) -> Result<PathBuf, S
         SessionSourceKind::Dsh => {
             let base = canonical_dsh_root()?;
             validate_dsh_layout(&canonical, &base)?;
+        }
+        SessionSourceKind::Kiro => {
+            let base = canonical_kiro_root()?;
+            validate_kiro_layout(&canonical, &base)?;
         }
         SessionSourceKind::Omp => {
             let base = canonical_omp_root()?;

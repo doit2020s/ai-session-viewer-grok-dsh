@@ -210,7 +210,7 @@ function getThreadLineText(node: ThreadDisplayNode, source: string): string {
   const title = node.threadTitle.trim();
 
   if (node.message.role === "assistant") {
-    const assistantName = source === "claude" ? "Claude" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : "Codex";
+    const assistantName = source === "claude" ? "Claude" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : source === "kiro" ? "Kiro" : "Codex";
     return title ? `${assistantName} · ${title}` : assistantName;
   }
 
@@ -446,7 +446,7 @@ export const MessageThread = memo(function MessageThread({
       console.error("Failed to resume session:", err);
     }
   };
-  const showActionButtons = Boolean(filePath);
+  const showActionButtons = Boolean(filePath) && source !== "dsh" && source !== "kiro";
   const canEdit = source === "grok" && __IS_TAURI__ && Boolean(filePath);
   const openEditor = (message: DisplayMessage) => {
     if (!message.uuid) return;
@@ -577,7 +577,8 @@ export const MessageThread = memo(function MessageThread({
       const msgId = getUserMessageId(msg, node.originalIndex);
       const bookmarked = sessionId ? isBookmarked(sessionId, msgId) : false;
       const canFork = !!msg.uuid;
-      const canResume = __IS_TAURI__ && !isRemoteNodeActive() && !!sessionId && !!projectPath;
+      const canResume = __IS_TAURI__ && !isRemoteNodeActive() && !!sessionId && !!projectPath
+        && ["claude", "codex", "grok", "omp"].includes(source);
       const isForking = forkingMsgId === msgId;
 
       return (

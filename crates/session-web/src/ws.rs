@@ -17,7 +17,7 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(1000);
 const MAX_BATCH_DURATION: Duration = Duration::from_secs(2);
 
 use session_core::parser::path_encoder::get_projects_dir;
-use session_core::provider::{claude, codex, dsh, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 use session_core::watcher_batch::collect_until_quiet;
 
 /// Shared broadcast sender for file change events
@@ -83,6 +83,11 @@ fn run_file_watcher_once(tx_clone: &broadcast::Sender<Vec<String>>) {
         }
     }
     if let Some(dir) = dsh::get_sessions_dir() {
+        if dir.exists() {
+            let _ = watcher.watch(&dir, RecursiveMode::Recursive);
+        }
+    }
+    if let Some(dir) = kiro::get_sessions_dir() {
         if dir.exists() {
             let _ = watcher.watch(&dir, RecursiveMode::Recursive);
         }
@@ -154,6 +159,16 @@ fn run_file_watcher_once(tx_clone: &broadcast::Sender<Vec<String>>) {
                     .collect();
                 if !dsh_paths.is_empty() {
                     dsh::invalidate_paths(&dsh_paths);
+                }
+            }
+            if let Some(dir) = kiro::get_sessions_dir() {
+                let kiro_paths: Vec<PathBuf> = paths
+                    .iter()
+                    .filter(|path| path.starts_with(&dir))
+                    .cloned()
+                    .collect();
+                if !kiro_paths.is_empty() {
+                    kiro::invalidate_paths(&kiro_paths);
                 }
             }
             if let Some(dir) = omp::get_sessions_dir() {

@@ -1,6 +1,6 @@
 use session_core::models::project::ProjectEntry;
 use session_core::provider::claude::{DeleteLevel, DeleteResult};
-use session_core::provider::{claude, codex, dsh, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 
 #[tauri::command]
 pub async fn get_projects(source: String) -> Result<Vec<ProjectEntry>, String> {
@@ -9,6 +9,7 @@ pub async fn get_projects(source: String) -> Result<Vec<ProjectEntry>, String> {
         "codex" => codex::get_projects(),
         "grok" => grok::get_projects(),
         "dsh" => dsh::get_projects(),
+        "kiro" => kiro::get_projects(),
         "omp" => omp::get_projects(),
         _ => Err(format!("Unknown source: {}", source)),
     })
@@ -23,6 +24,7 @@ pub async fn refresh_projects_cache(source: String) -> Result<Vec<ProjectEntry>,
         "codex" => codex::get_projects(),
         "grok" => grok::refresh_projects_cache(),
         "dsh" => dsh::refresh_projects_cache(),
+        "kiro" => kiro::refresh_projects_cache(),
         "omp" => omp::refresh_projects_cache(),
         _ => Err(format!("Unknown source: {}", source)),
     })
@@ -37,6 +39,7 @@ pub async fn rebuild_projects_cache(source: String) -> Result<Vec<ProjectEntry>,
         "codex" => codex::rebuild_projects_cache(),
         "grok" => grok::rebuild_projects_cache(),
         "dsh" => dsh::rebuild_projects_cache(),
+        "kiro" => kiro::rebuild_projects_cache(),
         "omp" => omp::rebuild_projects_cache(),
         _ => Err(format!("Unknown source: {}", source)),
     })

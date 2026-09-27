@@ -49,7 +49,7 @@ import {
 
 declare const __IS_TAURI__: boolean;
 const USE_TAURI_TRANSPORT = __IS_TAURI__ && !isRemoteNodeActive();
-type MessageSource = "claude" | "codex" | "grok" | "dsh" | "omp";
+type MessageSource = "claude" | "codex" | "grok" | "dsh" | "kiro" | "omp";
 type SplitDirection = "horizontal" | "vertical";
 
 const SPLIT_PANE_MESSAGES_PAGE_SIZE = 50;
@@ -2001,6 +2001,8 @@ function assistantNameFromSource(source: MessageSource) {
       ? "Grok"
       : source === "dsh"
         ? "DeepSeek"
+      : source === "kiro"
+        ? "Kiro"
       : source === "omp"
         ? "Oh My Pi"
         : "Claude";

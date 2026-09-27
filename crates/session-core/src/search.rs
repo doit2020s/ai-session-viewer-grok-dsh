@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::metadata;
 use crate::models::message::{DisplayContentBlock, DisplayMessage};
 use crate::parser::jsonl as claude_parser;
-use crate::provider::{claude, codex, dsh, grok, omp};
+use crate::provider::{claude, codex, dsh, grok, kiro, omp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchScope {
@@ -359,6 +359,7 @@ pub fn global_search(
         "codex" => search_codex(&query_lower, max_results, scope),
         "grok" => search_grok(&query_lower, max_results, scope),
         "dsh" => search_dsh(&query_lower, max_results, scope),
+        "kiro" => search_kiro(&query_lower, max_results, scope),
         "omp" => search_omp(&query_lower, max_results, scope),
         _ => return Err(format!("Unknown source: {}", source)),
     };
@@ -395,11 +396,69 @@ fn search_dsh(query_lower: &str, max_results: usize, scope: SearchScope) -> Vec<
             let mut search_aliases = Vec::new();
             push_search_alias(&mut search_aliases, alias.clone());
             push_search_alias(&mut search_aliases, session.thread_name.clone());
-            let Ok(messages) = dsh::parse_all_messages(std::path::Path::new(&session.file_path)) else {
+            let Ok(messages) = dsh::parse_all_messages(std::path::Path::new(&session.file_path))
+            else {
                 continue;
             };
             let ctx = SearchSessionContext {
                 source: "dsh".to_string(),
+                project_id: project.id.clone(),
+                project_name: project.short_name.clone(),
+                session_id: session.session_id,
+                thread_name: session.thread_name,
+                alias,
+                search_aliases,
+                tags,
+                file_path: session.file_path,
+            };
+            results.extend(search_messages_for_session(
+                &ctx,
+                &messages,
+                query_lower,
+                scope,
+                &counter,
+                max_results,
+            ));
+        }
+    }
+    results
+}
+
+fn search_kiro(query_lower: &str, max_results: usize, scope: SearchScope) -> Vec<SearchResult> {
+    if max_results == 0 {
+        return Vec::new();
+    }
+    let counter = AtomicUsize::new(0);
+    let mut results = Vec::new();
+    let Ok(projects) = kiro::get_projects() else {
+        return results;
+    };
+    for project in projects {
+        if counter.load(Ordering::Relaxed) >= max_results {
+            break;
+        }
+        let Ok(sessions) = kiro::get_sessions(&project.id) else {
+            continue;
+        };
+        let metadata = metadata::load_metadata("kiro", &project.id);
+        for session in sessions {
+            if counter.load(Ordering::Relaxed) >= max_results {
+                break;
+            }
+            let session_meta = metadata.sessions.get(&session.session_id);
+            let alias = session_meta.and_then(|item| item.alias.clone());
+            let tags = session_meta
+                .map(|item| item.tags.clone())
+                .filter(|items| !items.is_empty());
+            let mut search_aliases = Vec::new();
+            push_search_alias(&mut search_aliases, alias.clone());
+            push_search_alias(&mut search_aliases, session.thread_name.clone());
+            let Ok(messages) = kiro::parse_all_messages(std::path::Path::new(&session.file_path))
+            else {
+                continue;
+            };
+            let ctx = SearchSessionContext {
+                source: "kiro".to_string(),
                 project_id: project.id.clone(),
                 project_name: project.short_name.clone(),
                 session_id: session.session_id,

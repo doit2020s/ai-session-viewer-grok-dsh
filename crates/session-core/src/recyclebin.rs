@@ -325,6 +325,7 @@ pub fn restore_item(id: &str) -> Result<(), String> {
         "codex" => crate::provider::codex::invalidate_sessions_cache(),
         "grok" => crate::provider::grok::invalidate_sessions_cache(),
         "dsh" => crate::provider::dsh::invalidate_paths(&[]),
+        "kiro" => crate::provider::kiro::invalidate_paths(&[]),
         "omp" => crate::provider::omp::invalidate_sessions_cache(),
         _ => {}
     }

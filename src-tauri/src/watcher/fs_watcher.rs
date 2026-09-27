@@ -6,7 +6,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use session_core::parser::path_encoder::get_projects_dir;
-use session_core::provider::{claude, codex, dsh, grok, omp};
+use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 use session_core::watcher_batch::collect_until_quiet;
 
 /// Minimum interval between emitting fs-change events to the frontend.
@@ -21,6 +21,7 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
     let codex_dir = codex::get_sessions_dir();
     let grok_dir = grok::get_sessions_dir();
     let dsh_dir = dsh::get_sessions_dir();
+    let kiro_dir = kiro::get_sessions_dir();
     let omp_dir = omp::get_sessions_dir();
 
     // At least one directory must exist
@@ -28,6 +29,7 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
         || codex_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
         || grok_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
         || dsh_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
+        || kiro_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
         || omp_dir.as_ref().map(|dir| dir.exists()).unwrap_or(false)
     {
         // ok, proceed
@@ -69,6 +71,11 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
             }
         }
         if let Some(ref dir) = dsh_dir {
+            if dir.exists() {
+                let _ = watcher.watch(dir, RecursiveMode::Recursive);
+            }
+        }
+        if let Some(ref dir) = kiro_dir {
             if dir.exists() {
                 let _ = watcher.watch(dir, RecursiveMode::Recursive);
             }
@@ -119,6 +126,10 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
                     .map(|dir| paths.iter().any(|path| path.starts_with(dir)))
                     .unwrap_or(false);
                 let is_dsh_change = dsh_dir
+                    .as_ref()
+                    .map(|dir| paths.iter().any(|path| path.starts_with(dir)))
+                    .unwrap_or(false);
+                let is_kiro_change = kiro_dir
                     .as_ref()
                     .map(|dir| paths.iter().any(|path| path.starts_with(dir)))
                     .unwrap_or(false);
@@ -175,6 +186,18 @@ pub fn start_watcher(app_handle: AppHandle) -> Result<(), String> {
                             .collect();
                         if !provider_paths.is_empty() {
                             dsh::invalidate_paths(&provider_paths);
+                        }
+                    }
+                }
+                if is_kiro_change {
+                    if let Some(ref dir) = kiro_dir {
+                        let provider_paths: Vec<PathBuf> = paths
+                            .iter()
+                            .filter(|path| path.starts_with(dir))
+                            .cloned()
+                            .collect();
+                        if !provider_paths.is_empty() {
+                            kiro::invalidate_paths(&provider_paths);
                         }
                     }
                 }
