@@ -572,6 +572,13 @@ export async function resumeSession(
   // No-op in web mode; handled by UI directly
 }
 
+export async function createGrokSession(
+  _projectPath: string,
+  _shell?: string,
+): Promise<string> {
+  throw new Error("新建 Grok CLI 会话仅支持桌面版");
+}
+
 export async function getInstallType(): Promise<"installed" | "portable"> {
   return "installed"; // Not applicable in web mode
 }

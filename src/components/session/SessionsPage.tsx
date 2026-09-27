@@ -22,6 +22,7 @@ import {
   X,
   Archive,
   PackageOpen,
+  MessageSquarePlus,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN } from "date-fns/locale";
@@ -85,6 +86,7 @@ export function SessionsPage() {
   const [batchExportRect, setBatchExportRect] = useState<DOMRect | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [archiveStatus, setArchiveStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const [creatingGrokSession, setCreatingGrokSession] = useState(false);
 
   const toggleSelected = (filePath: string) => {
     setSelected((prev) => {
@@ -287,6 +289,22 @@ export function SessionsPage() {
     setTimeout(() => setArchiveStatus(null), 6000);
   };
 
+  const handleCreateGrokSession = async () => {
+    if (!__IS_TAURI__ || source !== "grok" || !project || project.isVirtual) return;
+    setCreatingGrokSession(true);
+    try {
+      const sessionId = await api.createGrokSession(project.displayPath, terminalShell);
+      showArchiveStatus(
+        true,
+        `已在“${project.shortName || projectId}”启动 Grok 新会话 ${sessionId.slice(0, 8)}。发送第一条消息后会自动出现在列表中。`,
+      );
+    } catch (error) {
+      showArchiveStatus(false, `新建 Grok 会话失败：${typeof error === "string" ? error : String(error)}`);
+    } finally {
+      setCreatingGrokSession(false);
+    }
+  };
+
   const handleBatchBackup = async () => {
     if (!__IS_TAURI__ || selectedSessions.length === 0) return;
     const { save } = await import("@tauri-apps/plugin-dialog");
@@ -394,6 +412,21 @@ export function SessionsPage() {
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {__IS_TAURI__ && source === "grok" && project && !project.isVirtual && (
+            <button
+              onClick={handleCreateGrokSession}
+              disabled={creatingGrokSession}
+              className="toolbar-button"
+              title={`在 ${project.displayPath} 启动原生 Grok CLI 新会话`}
+            >
+              {creatingGrokSession ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <MessageSquarePlus className="w-3.5 h-3.5" />
+              )}
+              {creatingGrokSession ? "启动中..." : "新建 Grok 会话"}
+            </button>
+          )}
           {__IS_TAURI__ && sessions.length + invalidSessions.length > 0 && (
             <button
               onClick={handleRestoreBackup}

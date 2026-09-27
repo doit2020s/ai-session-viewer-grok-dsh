@@ -16,6 +16,7 @@ const LOCAL_ONLY_METHODS = new Set<PropertyKey>([
   "openSessionFolder",
   "backupSessions",
   "restoreSessionBackup",
+  "createGrokSession",
 ]);
 
 function getApiModule(prop: PropertyKey): Promise<ApiModule> {
