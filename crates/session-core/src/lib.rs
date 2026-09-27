@@ -16,6 +16,7 @@ pub mod recyclebin;
 pub mod scan_progress;
 pub mod search;
 pub mod session_archive;
+pub mod session_files;
 pub mod skills;
 pub mod state;
 pub mod stats;

@@ -6,6 +6,13 @@ use crate::app_dir::{get_recyclebin_items_dir, get_recyclebin_manifest_path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RecycledRelatedPath {
+    pub original_path: String,
+    pub stored_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecycledItem {
     pub id: String,
     pub item_type: String,
@@ -20,6 +27,8 @@ pub struct RecycledItem {
     pub companion_original_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion_stored_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_paths: Vec<RecycledRelatedPath>,
     pub moved_at: String,
 }
 
@@ -91,6 +100,32 @@ pub fn move_to_recyclebin(
     session_title: Option<String>,
     project_name: Option<String>,
 ) -> Result<String, String> {
+    move_paths_to_recyclebin(
+        &[original_path.to_path_buf()],
+        item_type,
+        reason,
+        source,
+        project_id,
+        session_title,
+        project_name,
+    )
+}
+
+/// Move a primary session path and every provider-owned related path as one
+/// recoverable item. All moves are rolled back if any path or manifest update
+/// fails, so a session cannot be left half deleted.
+pub fn move_paths_to_recyclebin(
+    original_paths: &[PathBuf],
+    item_type: &str,
+    reason: &str,
+    source: &str,
+    project_id: &str,
+    session_title: Option<String>,
+    project_name: Option<String>,
+) -> Result<String, String> {
+    let original_path = original_paths
+        .first()
+        .ok_or_else(|| "At least one recyclebin path is required".to_string())?;
     let items_dir = get_recyclebin_items_dir()
         .ok_or_else(|| "Cannot determine recyclebin items path".to_string())?;
     fs::create_dir_all(&items_dir)
@@ -108,15 +143,50 @@ pub fn move_to_recyclebin(
         }
     };
 
-    let target: PathBuf = items_dir.join(&stored_name);
-
-    // 目标已存在则报错（理论上 id 纳秒级不会重复）
-    if target.exists() {
-        return Err(format!("Target already exists: {:?}", target));
+    let mut moves = Vec::with_capacity(original_paths.len());
+    for (index, path) in original_paths.iter().enumerate() {
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            format!(
+                "Failed to inspect recyclebin source {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Recyclebin source cannot be a symbolic link: {}",
+                path.display()
+            ));
+        }
+        if !metadata.is_file() && !metadata.is_dir() {
+            return Err(format!(
+                "Recyclebin source has unsupported type: {}",
+                path.display()
+            ));
+        }
+        let name = if index == 0 {
+            stored_name.clone()
+        } else {
+            format!("{id}.related.{:05}", index - 1)
+        };
+        let target = items_dir.join(&name);
+        if target.exists() {
+            return Err(format!("Target already exists: {:?}", target));
+        }
+        moves.push((path.clone(), target, name));
     }
 
-    fs::rename(original_path, &target)
-        .map_err(|e| format!("Failed to move to recyclebin: {}", e))?;
+    let mut moved = 0usize;
+    for (source_path, target, _) in &moves {
+        if let Err(error) = fs::rename(source_path, target) {
+            for (rollback_source, rollback_target, _) in moves[..moved].iter().rev() {
+                let _ = fs::rename(rollback_target, rollback_source);
+            }
+            return Err(format!(
+                "Failed to move session files to recyclebin: {error}"
+            ));
+        }
+        moved += 1;
+    }
 
     let item = RecycledItem {
         id: id.clone(),
@@ -130,12 +200,34 @@ pub fn move_to_recyclebin(
         stored_name,
         companion_original_path: None,
         companion_stored_name: None,
+        related_paths: moves
+            .iter()
+            .skip(1)
+            .map(|(original, _, stored)| RecycledRelatedPath {
+                original_path: original.to_string_lossy().to_string(),
+                stored_name: stored.clone(),
+            })
+            .collect(),
         moved_at: chrono::Utc::now().to_rfc3339(),
     };
 
     let mut manifest = load_manifest();
     manifest.items.push(item);
-    save_manifest(&manifest)?;
+    if let Err(error) = save_manifest(&manifest) {
+        let mut rollback_errors = Vec::new();
+        for (rollback_source, rollback_target, _) in moves.iter().rev() {
+            if let Err(rollback_error) = fs::rename(rollback_target, rollback_source) {
+                rollback_errors.push(rollback_error.to_string());
+            }
+        }
+        if rollback_errors.is_empty() {
+            return Err(format!("Failed to record recyclebin item: {error}"));
+        }
+        return Err(format!(
+            "Failed to record recyclebin item: {error}; rollback failed: {}",
+            rollback_errors.join("; ")
+        ));
+    }
 
     Ok(id)
 }
@@ -218,6 +310,7 @@ pub fn move_omp_session_to_recyclebin(
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
         companion_stored_name,
+        related_paths: Vec::new(),
         moved_at: chrono::Utc::now().to_rfc3339(),
     };
     let mut manifest = load_manifest();
@@ -263,58 +356,61 @@ pub fn restore_item(id: &str) -> Result<(), String> {
         .position(|item| item.id == id)
         .ok_or_else(|| format!("Item not found: {id}"))?;
     let item = manifest.items[pos].clone();
-    let companion = match (&item.companion_original_path, &item.companion_stored_name) {
+    let legacy_companion = match (&item.companion_original_path, &item.companion_stored_name) {
         (None, None) => None,
-        (Some(original), Some(stored)) => Some((PathBuf::from(original), stored)),
+        (Some(original), Some(stored)) => Some((PathBuf::from(original), stored.clone())),
         _ => return Err("Recyclebin companion metadata is incomplete".to_string()),
     };
 
     let items_dir = get_recyclebin_items_dir()
         .ok_or_else(|| "Cannot determine recyclebin items path".to_string())?;
-    let stored_path = items_dir.join(&item.stored_name);
-    if !stored_path.exists() {
-        return Err(format!("Stored file not found: {stored_path:?}"));
+    let mut restore_pairs = vec![(
+        items_dir.join(&item.stored_name),
+        PathBuf::from(&item.original_path),
+    )];
+    if let Some((original, stored)) = legacy_companion {
+        restore_pairs.push((items_dir.join(stored), original));
     }
-    let original = PathBuf::from(&item.original_path);
-    if original.exists() {
-        return Err(format!("Destination already exists: {original:?}"));
-    }
-    if let Some((companion_original, companion_stored_name)) = &companion {
-        if companion_original.exists() {
+    restore_pairs.extend(item.related_paths.iter().map(|related| {
+        (
+            items_dir.join(&related.stored_name),
+            PathBuf::from(&related.original_path),
+        )
+    }));
+
+    for (stored, original) in &restore_pairs {
+        if !stored.exists() {
+            return Err(format!("Stored session path not found: {stored:?}"));
+        }
+        if original.exists() {
             return Err(format!(
-                "Companion destination already exists: {companion_original:?}"
+                "Session restore destination already exists: {original:?}"
             ));
         }
-        let companion_stored_path = items_dir.join(companion_stored_name);
-        if !companion_stored_path.exists() {
-            return Err(format!(
-                "Stored companion not found: {companion_stored_path:?}"
-            ));
-        }
-    }
-    if let Some(parent) = original.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create parent dir: {error}"))?;
-    }
-    if let Some((companion_original, _)) = &companion {
-        if let Some(parent) = companion_original.parent() {
+        if let Some(parent) = original.parent() {
             fs::create_dir_all(parent)
-                .map_err(|error| format!("Failed to create companion parent dir: {error}"))?;
+                .map_err(|error| format!("Failed to create session parent dir: {error}"))?;
         }
     }
 
-    restore_path(&stored_path, &original)?;
-    if let Some((companion_original, companion_stored_name)) = &companion {
-        let companion_stored_path = items_dir.join(companion_stored_name);
-        if let Err(error) = restore_path(&companion_stored_path, companion_original) {
-            let rollback = restore_path(&original, &stored_path);
-            return match rollback {
-                Ok(()) => Err(format!("Failed to restore companion artifact: {error}")),
-                Err(rollback_error) => Err(format!(
-                    "Failed to restore companion artifact: {error}; failed to return session file to recyclebin: {rollback_error}"
-                )),
-            };
+    let mut restored = 0usize;
+    for (stored, original) in &restore_pairs {
+        if let Err(error) = restore_path(stored, original) {
+            let mut rollback_errors = Vec::new();
+            for (rollback_stored, rollback_original) in restore_pairs[..restored].iter().rev() {
+                if let Err(rollback_error) = restore_path(rollback_original, rollback_stored) {
+                    rollback_errors.push(rollback_error);
+                }
+            }
+            if rollback_errors.is_empty() {
+                return Err(format!("Failed to restore session files: {error}"));
+            }
+            return Err(format!(
+                "Failed to restore session files: {error}; rollback failed: {}",
+                rollback_errors.join("; ")
+            ));
         }
+        restored += 1;
     }
 
     manifest.items.remove(pos);
@@ -395,6 +491,13 @@ pub fn permanently_delete_item(id: &str) -> Result<(), String> {
                 .map_err(|error| format!("Failed to delete stored companion: {error}"))?;
         }
     }
+    for related in &item.related_paths {
+        let stored_path = items_dir.join(&related.stored_name);
+        if stored_path.exists() {
+            remove_path(&stored_path)
+                .map_err(|error| format!("Failed to delete related session path: {error}"))?;
+        }
+    }
     let stored_path = items_dir.join(&item.stored_name);
     if stored_path.exists() {
         remove_path(&stored_path)
@@ -430,6 +533,12 @@ pub fn empty_recyclebin() -> Result<usize, String> {
             let companion_stored_path = items_dir.join(companion_stored_name);
             if companion_stored_path.exists() {
                 let _ = remove_path(&companion_stored_path);
+            }
+        }
+        for related in &item.related_paths {
+            let stored_path = items_dir.join(&related.stored_name);
+            if stored_path.exists() {
+                let _ = remove_path(&stored_path);
             }
         }
     }

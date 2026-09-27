@@ -754,7 +754,8 @@ export function SessionsPage() {
           <div className="bg-card border border-border rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
             <h3 className="text-lg font-semibold mb-2">确认删除</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              确定要删除此会话吗？此操作不可撤销。
+              会话主文件及该会话产生的附件、快照和工具结果会一起删除。
+              {__IS_TAURI__ ? " 可从回收站完整还原。" : " 此操作不可撤销。"}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -965,7 +966,8 @@ export function SessionsPage() {
           <div className="bg-card border border-border rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
             <h3 className="text-lg font-semibold mb-2">批量删除会话</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              将删除选中的 {selectedSessions.length} 个会话（移入回收站，可在回收站还原）。
+              将删除选中的 {selectedSessions.length} 个会话及其全部附件、快照和工具结果
+              {__IS_TAURI__ ? "（移入回收站，可完整还原）。" : "，此操作不可撤销。"}
             </p>
             <div className="flex justify-end gap-2">
               <button

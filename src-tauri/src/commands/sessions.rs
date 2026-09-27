@@ -4,6 +4,7 @@ use session_core::models::session::SessionIndexEntry;
 use session_core::paths::validate_session_file;
 use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 use session_core::recyclebin;
+use session_core::session_files;
 
 fn merge_session_metadata(source: &str, project_id: &str, sessions: &mut [SessionIndexEntry]) {
     let meta = metadata::load_metadata(source, project_id);
@@ -109,6 +110,32 @@ pub fn delete_session(
     // to the recycle bin.
     match validate_session_file(&source, &file_path) {
         Ok(path) => {
+            if source == "claude" {
+                let actual_session = path.file_stem().and_then(|name| name.to_str());
+                let actual_project = path
+                    .parent()
+                    .and_then(|dir| dir.file_name())
+                    .and_then(|name| name.to_str());
+                if actual_session != Some(session_id.as_str())
+                    || actual_project != Some(project_id.as_str())
+                {
+                    return Err("Claude 会话与所选工作区不匹配".to_string());
+                }
+            }
+            if source == "codex" {
+                let session = codex::extract_session_meta(&path)
+                    .ok_or_else(|| "无法读取 Codex 会话元数据".to_string())?;
+                if session.id != session_id {
+                    return Err("Codex 会话 ID 与所选会话不匹配".to_string());
+                }
+            }
+            if source == "grok" {
+                let session = grok::extract_session_meta(&path)
+                    .ok_or_else(|| "无法读取 Grok 会话元数据".to_string())?;
+                if session.id != session_id {
+                    return Err("Grok 会话 ID 与所选会话不匹配".to_string());
+                }
+            }
             if source == "dsh" || source == "kiro" {
                 let actual_session = path
                     .parent()
@@ -138,26 +165,17 @@ pub fn delete_session(
                         "Session id does not match the requested OMP session file".to_string()
                     );
                 }
-                recyclebin::move_omp_session_to_recyclebin(&path, &project_id, None, None)?;
-            } else {
-                // Claude/Codex sessions are one JSONL file. Grok keeps a session in
-                // a directory, so recycle the validated file's parent as one unit.
-                let recycle_path = if source == "grok" || source == "dsh" || source == "kiro" {
-                    path.parent()
-                        .ok_or_else(|| "Invalid Grok session path".to_string())?
-                } else {
-                    path.as_path()
-                };
-                recyclebin::move_to_recyclebin(
-                    recycle_path,
-                    "session",
-                    "ManualDelete",
-                    &source,
-                    &project_id,
-                    None,
-                    None,
-                )?;
             }
+            let owned_paths = session_files::collect_session_paths(&source, &path, &session_id)?;
+            recyclebin::move_paths_to_recyclebin(
+                &owned_paths,
+                "session",
+                "ManualDelete",
+                &source,
+                &project_id,
+                None,
+                None,
+            )?;
         }
         // The rollout file is already gone — e.g. the conversation was archived
         // or deleted in Codex desktop while it still lingered in our in-memory

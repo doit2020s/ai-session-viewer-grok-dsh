@@ -5,6 +5,7 @@ use serde::Deserialize;
 use session_core::metadata;
 use session_core::models::session::SessionIndexEntry;
 use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
+use session_core::session_files;
 
 use crate::{resolve_claude_project_dir, resolve_session_file_path, SessionSource};
 
@@ -316,23 +317,44 @@ pub async fn delete_session(
         }
     }
 
-    tokio::task::spawn_blocking(move || {
-        if source == "grok" || source == "dsh" || source == "kiro" {
-            let session_dir = resolved_path
+    let resolved_session_id = session_id
+        .clone()
+        .or_else(|| match source_kind {
+            SessionSource::Claude => resolved_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_string),
+            SessionSource::Codex => codex::extract_session_meta(&resolved_path).map(|meta| meta.id),
+            SessionSource::Grok => grok::extract_session_meta(&resolved_path).map(|meta| meta.id),
+            SessionSource::Dsh | SessionSource::Kiro => resolved_path
                 .parent()
-                .ok_or_else(|| "Invalid directory-backed session path".to_string())?;
-            std::fs::remove_dir_all(session_dir)
-                .map_err(|error| format!("Failed to delete session: {error}"))?;
-        } else if source == "omp" {
-            omp::permanently_delete_session(&resolved_path)?;
-        } else {
-            std::fs::remove_file(&resolved_path)
-                .map_err(|error| format!("Failed to delete session: {error}"))?;
-        }
+                .and_then(|dir| dir.file_name())
+                .and_then(|value| value.to_str())
+                .map(str::to_string),
+            SessionSource::Omp => omp::extract_session_meta(&resolved_path).map(|meta| meta.id),
+        })
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "无法确定会话 ID".to_string()))?;
+
+    tokio::task::spawn_blocking(move || {
+        session_files::permanently_delete_session_files(
+            &source,
+            &resolved_path,
+            &resolved_session_id,
+        )?;
 
         // Clean up metadata if identifiers provided
         if let (Some(pid), Some(sid)) = (project_id, session_id) {
             let _ = metadata::remove_session_meta(&source, &pid, &sid);
+        }
+
+        match source.as_str() {
+            "claude" => claude::invalidate_cache(),
+            "codex" => codex::invalidate_sessions_cache(),
+            "grok" => grok::invalidate_sessions_cache(),
+            "dsh" => dsh::invalidate_paths(&[]),
+            "kiro" => kiro::invalidate_paths(&[]),
+            "omp" => omp::invalidate_sessions_cache(),
+            _ => {}
         }
 
         Ok(())
