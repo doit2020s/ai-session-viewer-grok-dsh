@@ -3,6 +3,8 @@ import { Loader2 } from "lucide-react";
 import type { ProjectEntry } from "../../types";
 import type { DeleteLevel } from "../../types";
 
+declare const __IS_TAURI__: boolean;
+
 interface DeleteProjectDialogProps {
   project: ProjectEntry;
   /** 数据源；非 claude 时隐藏「清理 CC 配置」选项。 */
@@ -36,12 +38,16 @@ export function DeleteProjectDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-card border border-border rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
-        <h3 className="text-lg font-semibold mb-2">确认删除工程</h3>
+        <h3 className="text-lg font-semibold mb-2">删除工作文件夹</h3>
         <p className="text-sm text-muted-foreground mb-1">
           工程：<span className="font-medium text-foreground">{displayName}</span>
         </p>
+        <p className="text-xs text-muted-foreground mb-2">
+          将删除会话管理器保存的整个工作区文件夹及其中 {project.sessionCount} 个会话、附件、快照和工具结果。
+        </p>
         <p className="text-xs text-muted-foreground mb-4">
-          将删除 {project.sessionCount} 个会话记录
+          不会删除上面显示的实际项目或源码目录。
+          {__IS_TAURI__ ? " 删除内容可从回收站整体还原。" : " 此操作不可撤销。"}
         </p>
 
         {/* Level 2 复选框（仅 claude 有 CC 配置） */}
@@ -84,7 +90,7 @@ export function DeleteProjectDialog({
                 删除中...
               </>
             ) : (
-              "删除"
+              "删除文件夹"
             )}
           </button>
         </div>

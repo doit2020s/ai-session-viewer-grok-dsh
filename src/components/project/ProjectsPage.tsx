@@ -566,7 +566,7 @@ export function ProjectsPage() {
           className="text-xs px-3 py-1.5 rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors flex items-center gap-1.5 disabled:opacity-50"
         >
           {batchBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-          删除选中
+          删除工作文件夹
         </button>
         <button
           onClick={exitSelectMode}
@@ -581,9 +581,9 @@ export function ProjectsPage() {
     {batchDeleteOpen && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
         <div className="bg-card border border-border rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
-          <h3 className="text-lg font-semibold mb-2">批量删除工程</h3>
+          <h3 className="text-lg font-semibold mb-2">批量删除工作文件夹</h3>
           <p className="text-sm text-muted-foreground mb-4">
-            将删除选中的 {selectedProjects.length} 个工程的会话记录（移入回收站，可在回收站还原）。
+            将完整删除选中的 {selectedProjects.length} 个会话工作区文件夹及其中全部会话产物（移入回收站，可整体还原）。不会删除实际项目或源码目录。
           </p>
 
           {source === "claude" && (

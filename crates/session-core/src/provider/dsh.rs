@@ -283,6 +283,37 @@ pub fn get_invalid_sessions(project_id: &str) -> Result<Vec<SessionIndexEntry>, 
         .collect())
 }
 
+pub fn delete_project(project_id: &str) -> Result<super::claude::DeleteResult, String> {
+    let dir = project_dir(project_id)?;
+    let sessions = get_sessions(project_id)?;
+    let project_name = sessions
+        .first()
+        .and_then(|session| session.cwd.as_deref().or(session.project_path.as_deref()))
+        .and_then(|path| Path::new(path).file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(project_id)
+        .to_string();
+    crate::recyclebin::move_to_recyclebin(
+        &dir,
+        "project",
+        "ManualDelete",
+        "dsh",
+        project_id,
+        None,
+        Some(project_name),
+    )?;
+    for session in &sessions {
+        let _ = crate::metadata::remove_session_meta("dsh", project_id, &session.session_id);
+    }
+    invalidate_paths(&[]);
+    Ok(super::claude::DeleteResult {
+        sessions_deleted: sessions.len(),
+        config_cleaned: false,
+        bookmarks_removed: 0,
+    })
+}
+
 pub fn parse_session_messages(
     path: &Path,
     page: usize,

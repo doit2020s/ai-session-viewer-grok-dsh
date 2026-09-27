@@ -688,29 +688,20 @@ pub fn delete_project(project_id: &str) -> Result<super::claude::DeleteResult, S
         .filter(|name| !name.is_empty())
         .unwrap_or(project_id)
         .to_string();
-    let mut sessions_deleted = 0;
-    for session in get_sessions(project_id)? {
-        let path = match crate::paths::validate_session_file("omp", &session.file_path) {
-            Ok(path) => path,
-            Err(_) => continue,
-        };
-        let Some(metadata) = extract_session_meta(&path) else {
-            continue;
-        };
-        if metadata.cwd != project_id || metadata.id != session.session_id {
-            continue;
-        }
-        if crate::recyclebin::move_omp_session_to_recyclebin(
-            &path,
-            project_id,
-            session.thread_name.clone().or(session.first_prompt.clone()),
-            Some(project_name.clone()),
-        )
-        .is_ok()
-        {
-            sessions_deleted += 1;
-            let _ = crate::metadata::remove_session_meta("omp", project_id, &session.session_id);
-        }
+    let sessions = get_sessions(project_id)?;
+    let sessions_deleted = sessions.len();
+    let owned_paths = crate::session_files::collect_project_session_paths("omp", &sessions)?;
+    crate::recyclebin::move_paths_to_recyclebin(
+        &owned_paths,
+        "project",
+        "ManualDelete",
+        "omp",
+        project_id,
+        None,
+        Some(project_name),
+    )?;
+    for session in &sessions {
+        let _ = crate::metadata::remove_session_meta("omp", project_id, &session.session_id);
     }
     invalidate_sessions_cache();
     Ok(super::claude::DeleteResult {

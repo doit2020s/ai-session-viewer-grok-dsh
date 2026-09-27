@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::provider::codex;
+use crate::{models::session::SessionIndexEntry, paths::validate_session_file};
 
 fn add_existing(
     paths: &mut Vec<PathBuf>,
@@ -125,6 +126,40 @@ pub fn collect_session_paths(
     }
 }
 
+fn collapse_nested_paths(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths.sort_by_key(|path| path.components().count());
+    let mut collapsed: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if !collapsed.iter().any(|parent| path.starts_with(parent)) {
+            collapsed.push(path);
+        }
+    }
+    collapsed
+}
+
+/// Collect every provider-owned file for all sessions in one displayed
+/// workspace. Nested paths are collapsed so a directory is never moved after
+/// one of its children has already been moved.
+pub fn collect_project_session_paths(
+    source: &str,
+    sessions: &[SessionIndexEntry],
+) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    for session in sessions {
+        let primary = validate_session_file(source, &session.file_path)?;
+        paths.extend(collect_session_paths(
+            source,
+            &primary,
+            &session.session_id,
+        )?);
+    }
+    let paths = collapse_nested_paths(paths);
+    if paths.is_empty() {
+        return Err("工作区没有可删除的会话文件".to_string());
+    }
+    Ok(paths)
+}
+
 pub fn permanently_delete_session_files(
     source: &str,
     primary: &Path,
@@ -183,5 +218,19 @@ mod tests {
         find_named_descendants(&root, "session-id", &mut found).unwrap();
         assert_eq!(found, vec![root.join("2026/09/session-id")]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_paths_are_collapsed_to_their_owned_parent() {
+        let root = PathBuf::from("root");
+        let paths = collapse_nested_paths(vec![
+            root.join("session/messages.jsonl"),
+            root.join("session"),
+            root.join("other.jsonl"),
+            root.join("session/snapshots/one"),
+        ]);
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&root.join("session")));
+        assert!(paths.contains(&root.join("other.jsonl")));
     }
 }

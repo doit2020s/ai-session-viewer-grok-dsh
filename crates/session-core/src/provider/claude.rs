@@ -930,41 +930,26 @@ pub fn delete_project(project_id: &str, level: DeleteLevel) -> Result<DeleteResu
         None
     };
 
-    // 统计 session 文件数（回收站将使用此计数）
+    // 统计并记录 session；整个提供商工作区目录会作为一个回收站条目移动，
+    // 这样子代理、工具结果和桌面状态文件可以随会话一起完整还原。
     let sessions_deleted = count_valid_jsonl_files(&canonical_dir);
-
-    // 将顶层 .jsonl 文件逐个移入回收站
+    let session_ids: Vec<String> = get_sessions(project_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|session| session.session_id)
+        .collect();
     let project_name = short_name_from_path(&project_path);
-
-    if let Ok(dir_entries) = fs::read_dir(&canonical_dir) {
-        for entry in dir_entries.flatten() {
-            let p = entry.path();
-            if p.is_file() && p.extension().map(|e| e == "jsonl").unwrap_or(false) {
-                if let Err(e) = crate::recyclebin::move_to_recyclebin(
-                    &p,
-                    "project",
-                    "ManualDelete",
-                    "claude",
-                    project_id,
-                    None,
-                    Some(project_name.clone()),
-                ) {
-                    eprintln!(
-                        "[delete_project] Failed to move {:?} to recyclebin: {}",
-                        p, e
-                    );
-                }
-            }
-        }
-    }
-
-    // 删除（现已清空 jsonl 的）项目目录
-    if let Err(e) = fs::remove_dir_all(&canonical_dir) {
-        // 可能还有非 jsonl 文件，或目录不为空，静默记录
-        eprintln!(
-            "[delete_project] Failed to remove dir {:?}: {}",
-            canonical_dir, e
-        );
+    crate::recyclebin::move_to_recyclebin(
+        &canonical_dir,
+        "project",
+        "ManualDelete",
+        "claude",
+        project_id,
+        None,
+        Some(project_name),
+    )?;
+    for session_id in session_ids {
+        let _ = crate::metadata::remove_session_meta("claude", project_id, &session_id);
     }
 
     let mut config_cleaned = false;

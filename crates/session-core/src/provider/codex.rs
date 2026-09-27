@@ -1102,32 +1102,19 @@ pub fn delete_project(project_id: &str) -> Result<super::claude::DeleteResult, S
         short_name_from_path(project_id)
     };
 
-    let mut sessions_deleted = 0;
-    for s in &sessions {
-        let path = Path::new(&s.file_path);
-        if !path.exists() {
-            continue;
-        }
-        match crate::recyclebin::move_to_recyclebin(
-            path,
-            "project",
-            "ManualDelete",
-            "codex",
-            project_id,
-            None,
-            Some(project_name.clone()),
-        ) {
-            Ok(_) => {
-                sessions_deleted += 1;
-                let _ = crate::metadata::remove_session_meta("codex", project_id, &s.session_id);
-            }
-            Err(e) => {
-                eprintln!(
-                    "[codex::delete_project] Failed to recycle {:?}: {}",
-                    path, e
-                );
-            }
-        }
+    let sessions_deleted = sessions.len();
+    let owned_paths = crate::session_files::collect_project_session_paths("codex", &sessions)?;
+    crate::recyclebin::move_paths_to_recyclebin(
+        &owned_paths,
+        "project",
+        "ManualDelete",
+        "codex",
+        project_id,
+        None,
+        Some(project_name),
+    )?;
+    for session in &sessions {
+        let _ = crate::metadata::remove_session_meta("codex", project_id, &session.session_id);
     }
 
     invalidate_sessions_cache();

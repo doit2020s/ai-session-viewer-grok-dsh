@@ -891,30 +891,30 @@ pub fn delete_project(project_id: &str) -> Result<super::claude::DeleteResult, S
         .filter(|name| !name.is_empty())
         .unwrap_or(project_id)
         .to_string();
-    let mut sessions_deleted = 0;
-
+    let sessions_deleted = sessions.len();
+    let mut project_dirs = Vec::new();
     for session in &sessions {
-        let path = Path::new(&session.file_path);
-        if !path.exists() {
-            continue;
+        let path = crate::paths::validate_session_file("grok", &session.file_path)?;
+        let project_dir = path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| "Grok 工作区目录无效".to_string())?
+            .to_path_buf();
+        if !project_dirs.contains(&project_dir) {
+            project_dirs.push(project_dir);
         }
-        let Some(session_dir) = path.parent() else {
-            continue;
-        };
-        if crate::recyclebin::move_to_recyclebin(
-            session_dir,
-            "project",
-            "ManualDelete",
-            "grok",
-            project_id,
-            None,
-            Some(project_name.clone()),
-        )
-        .is_ok()
-        {
-            sessions_deleted += 1;
-            let _ = crate::metadata::remove_session_meta("grok", project_id, &session.session_id);
-        }
+    }
+    crate::recyclebin::move_paths_to_recyclebin(
+        &project_dirs,
+        "project",
+        "ManualDelete",
+        "grok",
+        project_id,
+        None,
+        Some(project_name),
+    )?;
+    for session in &sessions {
+        let _ = crate::metadata::remove_session_meta("grok", project_id, &session.session_id);
     }
 
     invalidate_sessions_cache();
