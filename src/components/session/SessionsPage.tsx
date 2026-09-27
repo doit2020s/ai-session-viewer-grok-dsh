@@ -20,6 +20,8 @@ import {
   FolderOpen,
   CheckSquare,
   X,
+  Archive,
+  PackageOpen,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN } from "date-fns/locale";
@@ -82,6 +84,7 @@ export function SessionsPage() {
   // 批量导出格式浮层
   const [batchExportRect, setBatchExportRect] = useState<DOMRect | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [archiveStatus, setArchiveStatus] = useState<{ ok: boolean; text: string } | null>(null);
 
   const toggleSelected = (filePath: string) => {
     setSelected((prev) => {
@@ -279,6 +282,77 @@ export function SessionsPage() {
     }
   };
 
+  const showArchiveStatus = (ok: boolean, text: string) => {
+    setArchiveStatus({ ok, text });
+    setTimeout(() => setArchiveStatus(null), 6000);
+  };
+
+  const handleBatchBackup = async () => {
+    if (!__IS_TAURI__ || selectedSessions.length === 0) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const outputPath = await save({
+      defaultPath: `ai-sessions-${source}-${stamp}.zip`,
+      title: "保存会话原始文件备份",
+      filters: [{ name: "会话备份 ZIP", extensions: ["zip"] }],
+    });
+    if (!outputPath) return;
+    setBatchBusy(true);
+    try {
+      const result = await api.backupSessions(
+        source,
+        projectId,
+        project?.displayPath || null,
+        selectedSessions.map((session) => ({
+          sessionId: session.sessionId,
+          filePath: session.filePath,
+          title: session.alias || session.threadName || session.firstPrompt || null,
+        })),
+        outputPath,
+      );
+      showArchiveStatus(true, `已打包 ${result.sessionCount} 个会话、${result.fileCount} 个原始文件`);
+      exitSelectMode();
+    } catch (error) {
+      showArchiveStatus(false, `备份失败：${typeof error === "string" ? error : String(error)}`);
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const handleRestoreBackup = async () => {
+    if (!__IS_TAURI__) return;
+    const anchor = sessions[0] || invalidSessions[0];
+    if (!anchor) {
+      showArchiveStatus(false, "当前工作区没有可用于定位会话目录的会话");
+      return;
+    }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const archivePath = await open({
+      multiple: false,
+      directory: false,
+      title: `还原到 ${project?.shortName || projectId}`,
+      filters: [{ name: "会话备份 ZIP", extensions: ["zip"] }],
+    });
+    if (!archivePath || typeof archivePath !== "string") return;
+    if (!window.confirm(`把备份中的 ${source} 会话还原到当前工作区“${project?.shortName || projectId}”？\n已存在的同 ID 会话会跳过，不会覆盖。`)) return;
+    setBatchBusy(true);
+    try {
+      const result = await api.restoreSessionBackup(
+        archivePath,
+        source,
+        project?.displayPath || null,
+        anchor.filePath,
+      );
+      await api.refreshSessionsCache(source, projectId);
+      await selectProject(projectId);
+      showArchiveStatus(true, `已还原 ${result.restored} 个会话${result.skipped ? `，跳过 ${result.skipped} 个重复会话` : ""}`);
+    } catch (error) {
+      showArchiveStatus(false, `还原失败：${typeof error === "string" ? error : String(error)}`);
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
   // 批量删除（移入回收站，可还原）
   const handleBatchDelete = async () => {
     if (selectedSessions.length === 0) return;
@@ -320,6 +394,16 @@ export function SessionsPage() {
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {__IS_TAURI__ && sessions.length + invalidSessions.length > 0 && (
+            <button
+              onClick={handleRestoreBackup}
+              disabled={batchBusy}
+              className="toolbar-button"
+              title="选择会话备份 ZIP，还原到当前工作区"
+            >
+              <PackageOpen className="w-3.5 h-3.5" />还原备份
+            </button>
+          )}
           <select aria-label="会话显示方式" className="toolbar-button" value={sessionView} onChange={(event) => { setSessionView(event.target.value); localStorage.setItem("sessionLayout", event.target.value); }}><option value="grid">网格</option><option value="list">列表</option></select>
           {emptySessions.length > 0 && (
             <button
@@ -828,6 +912,17 @@ export function SessionsPage() {
             <Download className="w-3.5 h-3.5" />
             导出
           </button>
+          {__IS_TAURI__ && (
+            <button
+              onClick={handleBatchBackup}
+              disabled={batchBusy || selectedSessions.length === 0}
+              className="text-xs px-3 py-1.5 rounded-md border border-border text-foreground hover:bg-accent transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              title="打包原始会话文件，可在另一台电脑或其他工作区还原"
+            >
+              {batchBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5" />}
+              打包备份
+            </button>
+          )}
           <button
             onClick={() => setBatchDeleteOpen(true)}
             disabled={batchBusy || selectedSessions.length === 0}
@@ -897,6 +992,11 @@ export function SessionsPage() {
       {exportError && (
         <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive shadow-lg max-w-md">
           {exportError}
+        </div>
+      )}
+      {archiveStatus && (
+        <div className={`fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 border rounded-lg text-sm shadow-lg max-w-xl ${archiveStatus.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600" : "bg-destructive/10 border-destructive/30 text-destructive"}`}>
+          {archiveStatus.text}
         </div>
       )}
     </div>

@@ -411,6 +411,14 @@ export async function writeExportFile(_path: string, _content: string): Promise<
   throw new Error("writeExportFile is not supported in web mode");
 }
 
+export async function backupSessions(..._args: Parameters<typeof import("./tauriApi").backupSessions>): Promise<never> {
+  throw new Error("会话文件打包仅支持本机桌面模式");
+}
+
+export async function restoreSessionBackup(..._args: Parameters<typeof import("./tauriApi").restoreSessionBackup>): Promise<never> {
+  throw new Error("会话文件还原仅支持本机桌面模式");
+}
+
 export async function getScanProgress(): Promise<ScanProgress> {
   return apiFetch<ScanProgress>("/api/scan-progress");
 }

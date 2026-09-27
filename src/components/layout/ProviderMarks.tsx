@@ -51,8 +51,9 @@ export function GrokMark({ className = "" }: ProviderMarkProps) {
 export function DshMark({ className = "" }: ProviderMarkProps) {
   return (
     <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.16" />
-      <path d="M7 6.5h4.4c3.8 0 6.1 2 6.1 5.5s-2.3 5.5-6.1 5.5H7v-11Zm4.2 8.2c2 0 3.1-.9 3.1-2.7s-1.1-2.7-3.1-2.7h-1v5.4h1Z" fill="currentColor" />
+      <path d="M3.1 13.1c1.7-3.1 4.8-5 8.5-5 2 0 3.8.5 5.3 1.5.8-.7 1.8-1.1 3-1.1-.2 1.1-.7 2-1.5 2.7.9.9 1.6 2 2 3.3-2.5 3.3-6.1 5-10.2 4.5-3.4-.4-5.9-2.4-7.1-5.9Z" fill="currentColor" />
+      <path d="M3.5 12.7c-1-.5-1.8-1.4-2.1-2.6 1.5-.1 2.8.4 3.8 1.5M7.1 14.2c1.5.8 3.3 1.1 5 .7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="14.7" cy="11.7" r="1" fill="white" />
     </svg>
   );
 }
@@ -60,8 +61,10 @@ export function DshMark({ className = "" }: ProviderMarkProps) {
 export function KiroMark({ className = "" }: ProviderMarkProps) {
   return (
     <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <rect x="2" y="2" width="20" height="20" rx="5" fill="currentColor" opacity="0.14" />
-      <path d="M7 6.5h3v4.2l4.2-4.2h3.9l-5.3 5.1 5.7 5.9h-4l-4.5-4.8v4.8H7v-11Z" fill="currentColor" />
+      <path d="M5 18.7V10a7 7 0 0 1 14 0v8.7c0 .8-.9 1.2-1.5.7l-1.4-1.2-1.5 1.3a1 1 0 0 1-1.3 0L12 18.3l-1.3 1.2a1 1 0 0 1-1.3 0l-1.5-1.3-1.4 1.2c-.6.5-1.5.1-1.5-.7Z" fill="currentColor" />
+      <circle cx="9.5" cy="10.5" r="1.15" fill="white" />
+      <circle cx="14.5" cy="10.5" r="1.15" fill="white" />
+      <path d="M9.3 14c1.7 1.2 3.7 1.2 5.4 0" stroke="white" strokeWidth="1.35" strokeLinecap="round" />
     </svg>
   );
 }

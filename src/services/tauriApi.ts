@@ -21,6 +21,9 @@ import type {
   SkillsResult,
   ImportResult,
   SkillScope,
+  BackupSessionInput,
+  SessionBackupResult,
+  SessionRestoreResult,
 } from "../types";
 import type { CliInstallation, ModelInfo, StartChatParams, ContinueChatParams, CliConfig } from "../types/chat";
 import type {
@@ -224,6 +227,29 @@ export async function writeExportFile(
   content: string
 ): Promise<void> {
   return invoke<void>("write_export_file", { path, content });
+}
+
+export async function backupSessions(
+  source: string,
+  projectId: string,
+  projectPath: string | null,
+  sessions: BackupSessionInput[],
+  outputPath: string,
+): Promise<SessionBackupResult> {
+  return invoke<SessionBackupResult>("backup_sessions", {
+    source, projectId, projectPath, sessions, outputPath,
+  });
+}
+
+export async function restoreSessionBackup(
+  archivePath: string,
+  targetSource: string,
+  targetProjectPath: string | null,
+  targetAnchorPath: string,
+): Promise<SessionRestoreResult> {
+  return invoke<SessionRestoreResult>("restore_session_backup", {
+    archivePath, targetSource, targetProjectPath, targetAnchorPath,
+  });
 }
 
 export async function getScanProgress(): Promise<ScanProgress> {

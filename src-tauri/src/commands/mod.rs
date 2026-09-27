@@ -8,6 +8,7 @@ pub mod projects;
 pub mod provider_sync;
 pub mod recyclebin;
 pub mod search;
+pub mod session_archive;
 pub mod sessions;
 pub mod skills;
 pub mod stats;

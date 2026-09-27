@@ -14,6 +14,8 @@ const LOCAL_ONLY_METHODS = new Set<PropertyKey>([
   "editMessage",
   "deleteMessage",
   "openSessionFolder",
+  "backupSessions",
+  "restoreSessionBackup",
 ]);
 
 function getApiModule(prop: PropertyKey): Promise<ApiModule> {

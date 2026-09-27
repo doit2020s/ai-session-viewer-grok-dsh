@@ -40,6 +40,8 @@ pub fn run() {
             commands::trajectory::get_trajectory,
             commands::export::export_session,
             commands::export::write_export_file,
+            commands::session_archive::backup_sessions,
+            commands::session_archive::restore_session_backup,
             commands::progress::get_scan_progress,
             commands::search::global_search,
             commands::skills::list_skills,

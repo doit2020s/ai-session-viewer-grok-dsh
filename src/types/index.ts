@@ -364,6 +364,24 @@ export type DeleteLevel = "sessionOnly" | "withCcConfig";
 /** 会话导出格式。 */
 export type ExportFormat = "json" | "markdown" | "html";
 
+export interface BackupSessionInput {
+  sessionId: string;
+  filePath: string;
+  title: string | null;
+}
+
+export interface SessionBackupResult {
+  path: string;
+  sessionCount: number;
+  fileCount: number;
+}
+
+export interface SessionRestoreResult {
+  restored: number;
+  skipped: number;
+  restoredSessionIds: string[];
+}
+
 /** 冷启动扫描进度快照。 */
 export interface ScanProgress {
   active: boolean;
