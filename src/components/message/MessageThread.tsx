@@ -623,7 +623,7 @@ export const MessageThread = memo(function MessageThread({
                 {isForking ? "分叉中…" : "从此处分叉"}
               </button>
             )}
-            {canEdit && msg.uuid && (
+            {canEdit && msg.uuid && msg.content.some((block) => block.type === "text" && block.text.trim()) && (
               <button
                 type="button"
                 onClick={() => openEditor(msg)}
@@ -693,7 +693,8 @@ export const MessageThread = memo(function MessageThread({
         </div>
         {canEdit && msg.uuid && (
           <div className="mt-1 flex items-center gap-1">
-            {(!msg.content.some((block) => block.type === "reasoning") || source === "dsh") && <button
+            {msg.content.some((block) => block.type === "text" && block.text.trim())
+              && (!msg.content.some((block) => block.type === "reasoning") || source === "dsh") && <button
               type="button"
               onClick={() => openEditor(msg)}
               className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"

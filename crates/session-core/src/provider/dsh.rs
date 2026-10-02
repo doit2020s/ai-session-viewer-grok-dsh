@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Cursor};
+use std::io::{BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -375,25 +375,46 @@ fn replace_content_text(content: &mut Value, text: &str) -> Result<(), String> {
                 .position(|block| block.get("type").and_then(Value::as_str) == Some("text"))
                 .ok_or_else(|| "该 DeepSeek 消息没有可编辑的文本块".to_string())?;
             blocks[first_text]["text"] = Value::String(text.to_string());
-            let mut seen_text = false;
-            blocks.retain(|block| {
-                if block.get("type").and_then(Value::as_str) != Some("text") {
-                    return true;
+            // Keep the original block order and count: native DSH events can
+            // interleave text with reasoning and tool calls.
+            for block in blocks.iter_mut().skip(first_text + 1) {
+                if block.get("type").and_then(Value::as_str) == Some("text") {
+                    block["text"] = Value::String(String::new());
                 }
-                if seen_text {
-                    false
-                } else {
-                    seen_text = true;
-                    true
-                }
-            });
+            }
             Ok(())
         }
         _ => Err("该 DeepSeek 消息的 content 格式不支持编辑".to_string()),
     }
 }
 
-fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String, bool), String> {
+fn sync_inbox_copy(rows: &mut [Value], message_id: &str, text: Option<&str>) -> Result<(), String> {
+    for row in rows {
+        if row.get("type").and_then(Value::as_str) != Some("agent/inbox/spliced") {
+            continue;
+        }
+        let Some(inserted) = row.pointer_mut("/data/inserted").and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        if let Some(text) = text {
+            for message in inserted.iter_mut() {
+                if message.get("id").and_then(Value::as_str) != Some(message_id) {
+                    continue;
+                }
+                let content = message
+                    .get_mut("content")
+                    .ok_or_else(|| "DeepSeek 收件箱副本缺少 content 字段".to_string())?;
+                replace_content_text(content, text)?;
+            }
+        } else {
+            inserted.retain(|message| message.get("id").and_then(Value::as_str) != Some(message_id));
+        }
+    }
+    Ok(())
+}
+
+fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String, bool, Option<i64>), String> {
     let target = rows
         .iter()
         .enumerate()
@@ -402,6 +423,7 @@ fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String
     let role = message_value(&rows[target])
         .map(|(role, _)| role.to_string())
         .ok_or_else(|| "只能编辑 DeepSeek 用户消息或助手消息".to_string())?;
+    let target_seq = rows[target].get("seq").and_then(Value::as_i64);
     let is_last = rows
         .iter()
         .enumerate()
@@ -426,10 +448,13 @@ fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String
         .get_mut("content")
         .ok_or_else(|| "该 DeepSeek 消息没有 content 字段".to_string())?;
     replace_content_text(content, text)?;
-    Ok((role, is_last))
+    if role == "user" {
+        sync_inbox_copy(rows, message_id, Some(text))?;
+    }
+    Ok((role, is_last, target_seq))
 }
 
-fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool), String> {
+fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool, Option<i64>), String> {
     let target = rows
         .iter()
         .enumerate()
@@ -438,6 +463,21 @@ fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool)
     let role = message_value(&rows[target])
         .map(|(role, _)| role.to_string())
         .ok_or_else(|| "只能删除 DeepSeek 用户消息或助手消息".to_string())?;
+    let target_seq = rows[target].get("seq").and_then(Value::as_i64);
+    let call_ids: std::collections::HashSet<String> = message_value(&rows[target])
+        .and_then(|(_, message)| message.get("content"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool-call"))
+        .map(|block| {
+            block
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .ok_or_else(|| "DeepSeek 工具调用缺少 ID，无法安全删除".to_string())
+        })
+        .collect::<Result<_, _>>()?;
     let is_last = rows
         .iter()
         .enumerate()
@@ -449,7 +489,20 @@ fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool)
         })
         == Some(target);
     rows.remove(target);
-    Ok((role, is_last))
+    if role == "user" {
+        sync_inbox_copy(rows, message_id, None)?;
+    }
+    if !call_ids.is_empty() {
+        rows.retain(|row| {
+            let call_id = match row.get("type").and_then(Value::as_str) {
+                Some("tool/call") => row.pointer("/data/callId").and_then(Value::as_str),
+                Some("tool/result") => row.pointer("/data/message/toolCallId").and_then(Value::as_str),
+                _ => None,
+            };
+            !call_id.is_some_and(|id| call_ids.contains(id))
+        });
+    }
+    Ok((role, is_last, target_seq))
 }
 
 fn encode_rows(rows: &[Value]) -> Result<Vec<u8>, String> {
@@ -502,7 +555,12 @@ fn compact_projection_text(text: &str) -> String {
     compact
 }
 
-fn projection_write(path: &Path, role: &str, text: &str) -> Result<Option<PreparedWrite>, String> {
+fn projection_write(
+    path: &Path,
+    role: &str,
+    target_seq: Option<i64>,
+    rows: &[Value],
+) -> Result<Option<PreparedWrite>, String> {
     let Some(cache_path) = projection_cache_path(path) else {
         return Ok(None);
     };
@@ -514,16 +572,38 @@ fn projection_write(path: &Path, role: &str, text: &str) -> Result<Option<Prepar
             .map_err(|error| format!("读取 DeepSeek 会话配置失败：{error}"))?,
     )
     .map_err(|error| format!("解析 DeepSeek 会话配置失败：{error}"))?;
-    let turns = cache
+    let Some(turns) = cache
         .pointer_mut("/record/rows/turnOutline/val/turns")
         .and_then(Value::as_array_mut)
-        .ok_or_else(|| "DeepSeek 会话配置缺少 turnOutline.turns".to_string())?;
-    let last_turn = turns
+    else {
+        return Ok(None);
+    };
+    let Some(last_turn) = turns
         .last_mut()
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| "DeepSeek 会话配置没有可同步的最后一轮".to_string())?;
+    else {
+        return Ok(None);
+    };
+    let Some(turn_start) = last_turn
+        .get("seq")
+        .and_then(Value::as_i64)
+    else {
+        return Ok(None);
+    };
+    // Auto-continuation turns may have no new user message. Never copy a
+    // prompt or answer from an earlier turn into their projection.
+    if !target_seq.is_some_and(|seq| seq >= turn_start) {
+        return Ok(None);
+    }
+    let text = rows
+        .iter()
+        .rev()
+        .filter(|row| row.get("seq").and_then(Value::as_i64).is_some_and(|seq| seq >= turn_start))
+        .find_map(|row| visible_text(row).filter(|(candidate, _)| *candidate == role))
+        .map(|(_, text)| text)
+        .unwrap_or_default();
     let field = if role == "user" { "prompt" } else { "response" };
-    last_turn.insert(field.to_string(), Value::String(compact_projection_text(text)));
+    last_turn.insert(field.to_string(), Value::String(compact_projection_text(&text)));
     let bytes = serde_json::to_vec_pretty(&cache)
         .map_err(|error| format!("序列化 DeepSeek 会话配置失败：{error}"))?;
     Ok(Some(PreparedWrite { path: cache_path, bytes }))
@@ -538,51 +618,76 @@ fn sibling_path(path: &Path, suffix: &str) -> Result<PathBuf, String> {
 }
 
 fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
+    let transaction = uuid::Uuid::new_v4();
     let mut staged = Vec::with_capacity(writes.len());
     for write in &writes {
-        let temp = sibling_path(&write.path, "asv-write.tmp")?;
-        let _ = fs::remove_file(&temp);
-        if let Err(error) = fs::write(&temp, &write.bytes) {
+        if !write.path.is_file() {
+            for (temp, _) in &staged {
+                let _ = fs::remove_file(temp);
+            }
+            return Err(format!("DeepSeek 原文件已消失，已停止保存：{}", write.path.display()));
+        }
+        let temp = sibling_path(&write.path, &format!("asv-write-{transaction}.tmp"))?;
+        let backup = sibling_path(&write.path, &format!("asv-write-{transaction}.bak"))?;
+        let stage_result = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .and_then(|mut file| file.write_all(&write.bytes));
+        if let Err(error) = stage_result {
+            let _ = fs::remove_file(&temp);
             for (temp, _) in &staged {
                 let _ = fs::remove_file(temp);
             }
             return Err(format!("写入 DeepSeek 临时文件失败：{error}"));
         }
-        staged.push((temp, sibling_path(&write.path, "asv-write.bak")?));
+        staged.push((temp, backup));
     }
 
-    let mut committed = Vec::new();
     for (index, write) in writes.iter().enumerate() {
         let (temp, backup) = &staged[index];
-        let _ = fs::remove_file(backup);
         if let Err(error) = fs::rename(&write.path, backup) {
-            for (temp, _) in &staged[index..] {
-                let _ = fs::remove_file(temp);
-            }
-            for (path, backup) in committed.iter().rev() {
-                let _ = fs::remove_file(path);
-                let _ = fs::rename(backup, path);
-            }
-            return Err(format!("备份 DeepSeek 原文件失败：{error}"));
+            let restore_errors = rollback_writes(&writes, &staged, index);
+            return Err(format!("备份 DeepSeek 原文件失败：{error}{restore_errors}"));
         }
         if let Err(error) = fs::rename(temp, &write.path) {
-            let _ = fs::rename(backup, &write.path);
-            let _ = fs::remove_file(temp);
-            for (temp, _) in &staged[index + 1..] {
-                let _ = fs::remove_file(temp);
-            }
-            for (path, backup) in committed.iter().rev() {
-                let _ = fs::remove_file(path);
-                let _ = fs::rename(backup, path);
-            }
-            return Err(format!("保存 DeepSeek 修改失败：{error}"));
+            let restore_errors = rollback_writes(&writes, &staged, index + 1);
+            return Err(format!("保存 DeepSeek 修改失败：{error}{restore_errors}"));
         }
-        committed.push((write.path.clone(), backup.clone()));
     }
-    for (_, backup) in committed {
+    for (_, backup) in staged {
         let _ = fs::remove_file(backup);
     }
     Ok(())
+}
+
+fn rollback_writes(
+    writes: &[PreparedWrite],
+    staged: &[(PathBuf, PathBuf)],
+    backup_count: usize,
+) -> String {
+    let mut errors = Vec::new();
+    for index in (0..backup_count).rev() {
+        let original = &writes[index].path;
+        let backup = &staged[index].1;
+        if original.exists() {
+            if let Err(error) = fs::remove_file(original) {
+                errors.push(format!("无法移除失败后的文件 {}：{error}", original.display()));
+                continue;
+            }
+        }
+        if let Err(error) = fs::rename(backup, original) {
+            errors.push(format!("无法从备份 {} 恢复：{error}", backup.display()));
+        }
+    }
+    for (temp, _) in staged {
+        let _ = fs::remove_file(temp);
+    }
+    if errors.is_empty() {
+        String::new()
+    } else {
+        format!("；自动恢复未完成：{}", errors.join("；"))
+    }
 }
 
 pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), String> {
@@ -594,6 +699,7 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
     let mut primary_rows = None;
     let mut primary_role = None;
     let mut primary_is_last = false;
+    let mut primary_target_seq = None;
     for candidate in paths {
         let mut rows = decode_rows(&candidate)?;
         let contains_message = rows
@@ -603,25 +709,23 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
         if candidate.as_path() != path && !contains_message {
             continue;
         }
-        let (role, is_last) = edit_rows(&mut rows, message_id, text)?;
+        let (role, is_last, target_seq) = edit_rows(&mut rows, message_id, text)?;
         if candidate.as_path() == path {
             primary_role = Some(role);
             primary_is_last = is_last;
+            primary_target_seq = target_seq;
             primary_rows = Some(rows.clone());
         }
         writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)? });
     }
     if primary_is_last {
         let role = primary_role.as_deref().unwrap_or("assistant");
-        let tail_text = primary_rows
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .rev()
-            .find_map(|row| visible_text(row).filter(|(candidate, _)| *candidate == role))
-            .map(|(_, text)| text)
-            .unwrap_or_default();
-        if let Some(cache_write) = projection_write(path, role, &tail_text)? {
+        if let Some(cache_write) = projection_write(
+            path,
+            role,
+            primary_target_seq,
+            primary_rows.as_deref().unwrap_or_default(),
+        )? {
             writes.push(cache_write);
         }
     }
@@ -634,6 +738,7 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
     let mut primary_rows = None;
     let mut primary_role = None;
     let mut primary_was_last = false;
+    let mut primary_target_seq = None;
     for candidate in paths {
         let mut rows = decode_rows(&candidate)?;
         let contains_message = rows
@@ -643,25 +748,23 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
         if candidate.as_path() != path && !contains_message {
             continue;
         }
-        let (role, was_last) = delete_rows(&mut rows, message_id)?;
+        let (role, was_last, target_seq) = delete_rows(&mut rows, message_id)?;
         if candidate.as_path() == path {
             primary_role = Some(role);
             primary_was_last = was_last;
+            primary_target_seq = target_seq;
             primary_rows = Some(rows.clone());
         }
         writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)? });
     }
     if primary_was_last {
         let role = primary_role.as_deref().unwrap_or("assistant");
-        let tail_text = primary_rows
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .rev()
-            .find_map(|row| visible_text(row).filter(|(candidate, _)| *candidate == role))
-            .map(|(_, text)| text)
-            .unwrap_or_default();
-        if let Some(cache_write) = projection_write(path, role, &tail_text)? {
+        if let Some(cache_write) = projection_write(
+            path,
+            role,
+            primary_target_seq,
+            primary_rows.as_deref().unwrap_or_default(),
+        )? {
             writes.push(cache_write);
         }
     }
@@ -747,9 +850,12 @@ mod tests {
         let v3 = session_dir.join(SESSION_FILES[1]);
         let rows = vec![
             serde_json::json!({"type":"session","version":4,"id":"session-1","seq":0,"createdAt":1000,"cwd":"C:\\work"}),
+            serde_json::json!({"type":"agent/inbox/spliced","seq":1,"data":{"inserted":[{"id":"u1","content":[{"type":"text","text":"question"}]}]}}),
             serde_json::json!({"type":"user/message","seq":1,"time":2000,"data":{"id":"u1","content":[{"type":"text","text":"question"}]}}),
             serde_json::json!({"type":"assistant/message","seq":2,"time":3000,"data":{"turn":1,"message":{"id":"a1","content":[{"type":"text","text":"first answer"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
-            serde_json::json!({"type":"assistant/message","seq":3,"time":4000,"data":{"turn":1,"message":{"id":"a2","content":[{"type":"reasoning","text":"private"},{"type":"text","text":"old answer"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
+            serde_json::json!({"type":"assistant/message","seq":3,"time":4000,"data":{"turn":1,"message":{"id":"a2","content":[{"type":"reasoning","text":"private"},{"type":"text","text":"old answer"},{"type":"tool-call","id":"call-1","name":"test"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
+            serde_json::json!({"type":"tool/call","seq":4,"data":{"callId":"call-1","name":"test"}}),
+            serde_json::json!({"type":"tool/result","seq":5,"data":{"message":{"toolCallId":"call-1","content":[]}}}),
         ];
         write_compressed(&v4, &rows);
         write_compressed(&v3, &rows);
@@ -765,7 +871,7 @@ mod tests {
             serde_json::to_vec_pretty(&serde_json::json!({
                 "version": 1,
                 "record": {"rows": {"turnOutline": {"val": {"turns": [
-                    {"turn": 1, "prompt": "question", "response": "old answer"}
+                    {"turn": 1, "seq": 0, "prompt": "question", "response": "old answer"}
                 ]}}}}
             }))
             .unwrap(),
@@ -794,13 +900,68 @@ mod tests {
             let messages = parse_all_messages(path).unwrap();
             assert_eq!(messages.len(), 2);
             assert_eq!(messages[1].uuid.as_deref(), Some("a1"));
+            assert!(!decode_rows(path).unwrap().iter().any(|row| {
+                matches!(row.get("type").and_then(Value::as_str), Some("tool/call" | "tool/result"))
+            }));
         }
         let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
         assert_eq!(
             projection.pointer("/record/rows/turnOutline/val/turns/0/response").and_then(Value::as_str),
             Some("first answer")
         );
-        assert_eq!(session_files(&root.join("sessions").join("workspace")), vec![v4]);
+        assert_eq!(session_files(&root.join("sessions").join("workspace")), vec![v4.clone()]);
+
+        edit_message(&v4, "u1", "changed question").unwrap();
+        for path in [&v4, &v3] {
+            let rows = decode_rows(path).unwrap();
+            assert_eq!(rows[1].pointer("/data/inserted/0/content/0/text").and_then(Value::as_str), Some("changed question"));
+            assert_eq!(rows[2].pointer("/data/content/0/text").and_then(Value::as_str), Some("changed question"));
+        }
+        delete_message(&v4, "u1").unwrap();
+        for path in [&v4, &v3] {
+            let rows = decode_rows(path).unwrap();
+            assert!(rows[1].pointer("/data/inserted").and_then(Value::as_array).unwrap().is_empty());
+            assert_eq!(parse_all_messages(path).unwrap().len(), 1);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editing_earlier_turn_does_not_fill_auto_continuation_prompt() {
+        let root = std::env::temp_dir().join(format!("dsh-auto-turn-{}", uuid::Uuid::new_v4()));
+        let path = root
+            .join("sessions")
+            .join("workspace")
+            .join("session-1")
+            .join(SESSION_FILES[0]);
+        write_compressed(&path, &[
+            serde_json::json!({"type":"session","id":"session-1","cwd":"C:\\work"}),
+            serde_json::json!({"type":"turn/start","seq":1,"data":{"turn":1}}),
+            serde_json::json!({"type":"user/message","seq":2,"data":{"id":"u1","content":[{"type":"text","text":"old"}]}}),
+            serde_json::json!({"type":"turn/start","seq":5,"data":{"turn":2}}),
+            serde_json::json!({"type":"assistant/message","seq":6,"data":{"turn":2,"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
+        ]);
+        let cache = root
+            .join("storages")
+            .join("session_projcache")
+            .join("sessions")
+            .join("session-1.json");
+        fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        fs::write(&cache, serde_json::json!({
+            "record":{"rows":{"turnOutline":{"val":{"turns":[
+                {"turn":1,"seq":1,"prompt":"old","response":""},
+                {"turn":2,"seq":5,"prompt":"","response":"answer"}
+            ]}}}}
+        }).to_string()).unwrap();
+        let old_backup = sibling_path(&path, "asv-write.bak").unwrap();
+        fs::write(&old_backup, b"previous recovery copy").unwrap();
+
+        edit_message(&path, "u1", "new").unwrap();
+        let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        assert_eq!(projection.pointer("/record/rows/turnOutline/val/turns/1/prompt").and_then(Value::as_str), Some(""));
+        assert_eq!(fs::read(&old_backup).unwrap(), b"previous recovery copy");
+        assert_eq!(parse_all_messages(&path).unwrap()[0].content.len(), 1);
 
         let _ = fs::remove_dir_all(root);
     }
