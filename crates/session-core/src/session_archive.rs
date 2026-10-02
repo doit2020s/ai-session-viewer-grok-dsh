@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -286,18 +286,13 @@ fn rewrite_workspace(
 }
 
 fn rewrite_dsh_cwd(path: &Path, cwd: &str) -> Result<(), String> {
-    let decoded = zstd::stream::decode_all(File::open(path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let mut output = Vec::new();
-    for line in BufReader::new(decoded.as_slice()).lines() {
-        let mut row: Value =
-            serde_json::from_str(&line.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut rows = dsh::decode_rows(path)?;
+    for row in &mut rows {
         if row.get("type").and_then(Value::as_str) == Some("session") {
             row["cwd"] = Value::String(cwd.to_string());
         }
-        writeln!(&mut output, "{}", row).map_err(|e| e.to_string())?;
     }
-    let encoded = zstd::stream::encode_all(output.as_slice(), 3).map_err(|e| e.to_string())?;
+    let encoded = dsh::encode_rows(&rows)?;
     fs::write(path, encoded).map_err(|e| e.to_string())
 }
 

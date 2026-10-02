@@ -22,8 +22,12 @@ pub fn get_sessions_dir() -> Option<PathBuf> {
 }
 
 pub(crate) fn decode_rows(path: &Path) -> Result<Vec<Value>, String> {
-    let file = fs::File::open(path).map_err(|error| format!("打开 DSH 会话失败：{error}"))?;
-    let decoded = zstd::stream::decode_all(file)
+    let bytes = fs::read(path).map_err(|error| format!("打开 DSH 会话失败：{error}"))?;
+    decode_rows_from_bytes(&bytes)
+}
+
+fn decode_rows_from_bytes(bytes: &[u8]) -> Result<Vec<Value>, String> {
+    let decoded = zstd::stream::decode_all(Cursor::new(bytes))
         .map_err(|error| format!("解压 DSH 会话失败：{error}"))?;
     BufReader::new(Cursor::new(decoded))
         .lines()
@@ -322,6 +326,7 @@ pub fn delete_project(project_id: &str) -> Result<super::claude::DeleteResult, S
 struct PreparedWrite {
     path: PathBuf,
     bytes: Vec<u8>,
+    original: Vec<u8>,
 }
 
 fn message_value(row: &Value) -> Option<(&str, &Value)> {
@@ -408,8 +413,124 @@ fn sync_inbox_copy(rows: &mut [Value], message_id: &str, text: Option<&str>) -> 
                 replace_content_text(content, text)?;
             }
         } else {
-            inserted.retain(|message| message.get("id").and_then(Value::as_str) != Some(message_id));
+            for message in inserted.iter_mut() {
+                if message.get("id").and_then(Value::as_str) == Some(message_id) {
+                    message["content"] = Value::Array(Vec::new());
+                }
+            }
         }
+    }
+    Ok(())
+}
+
+fn sync_assistant_text_stream(data: &mut Value, text: &str) -> Result<(), String> {
+    let unsupported = || "该 DeepSeek 助手消息的流格式无法安全同步，已保留原文件".to_string();
+    if data.get("interrupted").and_then(Value::as_bool) == Some(true) {
+        return Err(unsupported());
+    }
+    let content = data
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .ok_or_else(unsupported)?;
+    let stream = data
+        .get("stream")
+        .and_then(Value::as_array)
+        .ok_or_else(unsupported)?;
+
+    // BlockAssembler orders blocks by the first occurrence of their index, not
+    // by block-end order. Keep that mapping before changing any stream record.
+    let mut block_order = Vec::new();
+    let mut block_ends = Vec::new();
+    let mut text_runs = Vec::new();
+    for (position, record) in stream.iter().enumerate() {
+        let kind = record.get("type").and_then(Value::as_str).ok_or_else(unsupported)?;
+        let (index, chunk) = match kind {
+            "chunk" => {
+                let chunk = record.get("chunk").ok_or_else(unsupported)?;
+                let chunk_type = chunk.get("type").and_then(Value::as_str).ok_or_else(unsupported)?;
+                match chunk_type {
+                    "usage" | "finish" => continue,
+                    "text-delta" => return Err(unsupported()),
+                    "block-start" | "block-end" | "reasoning-delta" | "tool-call-delta" => {
+                        (chunk.get("index").and_then(Value::as_u64).ok_or_else(unsupported)?, Some(chunk))
+                    }
+                    _ => return Err(unsupported()),
+                }
+            }
+            "text-chunks" | "reasoning-chunks" | "tool-call-chunks" => {
+                (record.get("index").and_then(Value::as_u64).ok_or_else(unsupported)?, None)
+            }
+            _ => return Err(unsupported()),
+        };
+        if index > 9_007_199_254_740_991 {
+            return Err(unsupported());
+        }
+        if !block_order.contains(&index) {
+            block_order.push(index);
+        }
+        if kind == "text-chunks" {
+            text_runs.push((index, position));
+        }
+        if let Some(chunk) = chunk {
+            if chunk.get("type").and_then(Value::as_str) == Some("block-end") {
+                let block_type = chunk.pointer("/block/type").and_then(Value::as_str).ok_or_else(unsupported)?;
+                if block_ends.iter().any(|(seen, _, _)| *seen == index) {
+                    return Err(unsupported());
+                }
+                block_ends.push((index, position, block_type));
+            }
+        }
+    }
+    if block_order.len() != content.len() || block_ends.len() != content.len() {
+        return Err(unsupported());
+    }
+
+    let mut edits = Vec::new();
+    for (position, block) in content.iter().enumerate() {
+        let index = block_order[position];
+        let block_type = block.get("type").and_then(Value::as_str).ok_or_else(unsupported)?;
+        let (_, end_position, end_type) = block_ends
+            .iter()
+            .find(|(seen, _, _)| *seen == index)
+            .ok_or_else(unsupported)?;
+        if block_type != *end_type {
+            return Err(unsupported());
+        }
+        if block_type != "text" {
+            continue;
+        }
+        let old_text = block.get("text").and_then(Value::as_str).ok_or_else(unsupported)?;
+        if stream[*end_position].pointer("/chunk/block/text").and_then(Value::as_str) != Some(old_text) {
+            return Err(unsupported());
+        }
+        let runs: Vec<_> = text_runs.iter().filter(|(seen, _)| *seen == index).collect();
+        if runs.len() != 1 || runs[0].1 >= *end_position {
+            return Err(unsupported());
+        }
+        let run_position = runs[0].1;
+        let run = &stream[run_position];
+        if run.get("time0").and_then(Value::as_i64).is_none()
+            || !run.get("dt").is_some_and(Value::is_array)
+            || !run.get("texts").is_some_and(|value| {
+                value.as_array().is_some_and(|items| !items.is_empty() && items.iter().all(Value::is_string))
+            })
+        {
+            return Err(unsupported());
+        }
+        let replacement = if edits.is_empty() { text } else { "" };
+        edits.push((run_position, *end_position, replacement.to_string()));
+    }
+    if edits.is_empty() {
+        return Err("该 DeepSeek 消息没有可编辑的文本块".to_string());
+    }
+    let stream = data
+        .get_mut("stream")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(unsupported)?;
+    for (run_position, end_position, replacement) in edits {
+        stream[run_position]["texts"] = Value::Array(vec![Value::String(replacement.clone())]);
+        stream[run_position]["dt"] = Value::Array(Vec::new());
+        stream[end_position]["chunk"]["block"]["text"] = Value::String(replacement);
     }
     Ok(())
 }
@@ -438,6 +559,9 @@ fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String
     let data = rows[target]
         .get_mut("data")
         .ok_or_else(|| "DeepSeek 消息缺少 data 字段".to_string())?;
+    if role == "assistant" {
+        sync_assistant_text_stream(data, text)?;
+    }
     let message = if role == "assistant" {
         data.get_mut("message")
             .ok_or_else(|| "DeepSeek 助手消息缺少 message 字段".to_string())?
@@ -464,20 +588,24 @@ fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool,
         .map(|(role, _)| role.to_string())
         .ok_or_else(|| "只能删除 DeepSeek 用户消息或助手消息".to_string())?;
     let target_seq = rows[target].get("seq").and_then(Value::as_i64);
-    let call_ids: std::collections::HashSet<String> = message_value(&rows[target])
+    let has_tool_calls_in_content = message_value(&rows[target])
         .and_then(|(_, message)| message.get("content"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool-call"))
-        .map(|block| {
-            block
-                .get("id")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-                .ok_or_else(|| "DeepSeek 工具调用缺少 ID，无法安全删除".to_string())
-        })
-        .collect::<Result<_, _>>()?;
+        .any(|block| block.get("type").and_then(Value::as_str) == Some("tool-call"));
+    let has_tool_calls_in_stream = rows[target]
+        .pointer("/data/stream")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|entry| {
+            entry.pointer("/chunk/type").and_then(Value::as_str) == Some("tool-call-delta")
+                || entry.pointer("/chunk/block/type").and_then(Value::as_str) == Some("tool-call")
+        });
+    if has_tool_calls_in_content || has_tool_calls_in_stream {
+        return Err("这条 DeepSeek 回复含工具调用；删除它会破坏原生会话关系，已保留原文件".to_string());
+    }
     let is_last = rows
         .iter()
         .enumerate()
@@ -488,34 +616,94 @@ fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool,
                 .map(|_| index)
         })
         == Some(target);
-    rows.remove(target);
+    // Native DSH logs are append-only and every event seq is used as a stable
+    // reference. Erasing a physical row leaves a gap and can invalidate later
+    // surface, turn, and fork references. Empty the message payload in place;
+    // the viewer hides empty messages and DSH no longer receives their text.
+    let data = rows[target]
+        .get_mut("data")
+        .ok_or_else(|| "DeepSeek 消息缺少 data 字段".to_string())?;
+    if role == "assistant" {
+        if let Some(object) = data.as_object_mut() {
+            if object.contains_key("stream") {
+                object.insert("stream".to_string(), Value::Array(Vec::new()));
+            }
+            object.remove("usage");
+        }
+    }
+    let message = if role == "assistant" {
+        data.get_mut("message")
+            .ok_or_else(|| "DeepSeek 助手消息缺少 message 字段".to_string())?
+    } else {
+        data
+    };
+    message["content"] = Value::Array(Vec::new());
+    if role == "assistant" {
+        if let Some(source) = message.get_mut("source").and_then(Value::as_object_mut) {
+            source.remove("replayState");
+        }
+    }
     if role == "user" {
         sync_inbox_copy(rows, message_id, None)?;
-    }
-    if !call_ids.is_empty() {
-        rows.retain(|row| {
-            let call_id = match row.get("type").and_then(Value::as_str) {
-                Some("tool/call") => row.pointer("/data/callId").and_then(Value::as_str),
-                Some("tool/result") => row.pointer("/data/message/toolCallId").and_then(Value::as_str),
-                _ => None,
-            };
-            !call_id.is_some_and(|id| call_ids.contains(id))
-        });
     }
     Ok((role, is_last, target_seq))
 }
 
-fn encode_rows(rows: &[Value]) -> Result<Vec<u8>, String> {
-    let mut jsonl = String::new();
-    for row in rows {
-        jsonl.push_str(
-            &serde_json::to_string(row)
-                .map_err(|error| format!("序列化 DeepSeek 会话失败：{error}"))?,
-        );
-        jsonl.push('\n');
+fn encode_frame(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3)
+        .map_err(|error| format!("压缩 DeepSeek 会话失败：{error}"))?;
+    encoder
+        .include_checksum(true)
+        .map_err(|error| format!("设置 DeepSeek 帧校验失败：{error}"))?;
+    encoder
+        .write_all(bytes)
+        .map_err(|error| format!("写入 DeepSeek 压缩帧失败：{error}"))?;
+    encoder
+        .finish()
+        .map_err(|error| format!("完成 DeepSeek 压缩帧失败：{error}"))
+}
+
+/// DSH reads the first zstd frame independently and requires it to contain
+/// exactly the header line. Later frames contain event batches.
+pub(crate) fn encode_rows(rows: &[Value]) -> Result<Vec<u8>, String> {
+    let (header, events) = rows
+        .split_first()
+        .ok_or_else(|| "DeepSeek 会话缺少头记录".to_string())?;
+    if header.get("type").and_then(Value::as_str) != Some("session") {
+        return Err("DeepSeek 会话首行不是头记录".to_string());
     }
-    zstd::stream::encode_all(Cursor::new(jsonl.into_bytes()), 3)
-        .map_err(|error| format!("压缩 DeepSeek 会话失败：{error}"))
+    if header.get("version").and_then(Value::as_u64) == Some(4) {
+        for (index, event) in events.iter().enumerate() {
+            if event.get("seq").and_then(Value::as_u64) != Some(index as u64) {
+                return Err(format!(
+                    "DeepSeek v4 事件序号在第 {} 条断裂，已拒绝写入以保护原会话",
+                    index + 1
+                ));
+            }
+        }
+    }
+    let mut header_line = serde_json::to_vec(header)
+        .map_err(|error| format!("序列化 DeepSeek 会话头失败：{error}"))?;
+    header_line.push(b'\n');
+    let mut compressed = encode_frame(&header_line)?;
+    if !events.is_empty() {
+        let mut body = Vec::new();
+        for event in events {
+            let mut event = event.clone();
+            // The older pentest plugin emitted this extension without the
+            // compatibility marker now used by its current version.
+            if event.get("type").and_then(Value::as_str) == Some("plugin:pentest-submission")
+                && event.get("ignorable").is_none()
+            {
+                event["ignorable"] = Value::Bool(true);
+            }
+            serde_json::to_writer(&mut body, &event)
+                .map_err(|error| format!("序列化 DeepSeek 会话事件失败：{error}"))?;
+            body.push(b'\n');
+        }
+        compressed.extend(encode_frame(&body)?);
+    }
+    Ok(compressed)
 }
 
 fn companion_paths(path: &Path) -> Vec<PathBuf> {
@@ -567,10 +755,9 @@ fn projection_write(
     if !cache_path.is_file() {
         return Ok(None);
     }
-    let mut cache: Value = serde_json::from_slice(
-        &fs::read(&cache_path)
-            .map_err(|error| format!("读取 DeepSeek 会话配置失败：{error}"))?,
-    )
+    let original = fs::read(&cache_path)
+        .map_err(|error| format!("读取 DeepSeek 会话配置失败：{error}"))?;
+    let mut cache: Value = serde_json::from_slice(&original)
     .map_err(|error| format!("解析 DeepSeek 会话配置失败：{error}"))?;
     let Some(turns) = cache
         .pointer_mut("/record/rows/turnOutline/val/turns")
@@ -606,7 +793,7 @@ fn projection_write(
     last_turn.insert(field.to_string(), Value::String(compact_projection_text(&text)));
     let bytes = serde_json::to_vec_pretty(&cache)
         .map_err(|error| format!("序列化 DeepSeek 会话配置失败：{error}"))?;
-    Ok(Some(PreparedWrite { path: cache_path, bytes }))
+    Ok(Some(PreparedWrite { path: cache_path, bytes, original }))
 }
 
 fn sibling_path(path: &Path, suffix: &str) -> Result<PathBuf, String> {
@@ -621,11 +808,13 @@ fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
     let transaction = uuid::Uuid::new_v4();
     let mut staged = Vec::with_capacity(writes.len());
     for write in &writes {
-        if !write.path.is_file() {
+        if !fs::read(&write.path)
+            .is_ok_and(|current| current.as_slice() == write.original.as_slice())
+        {
             for (temp, _) in &staged {
                 let _ = fs::remove_file(temp);
             }
-            return Err(format!("DeepSeek 原文件已消失，已停止保存：{}", write.path.display()));
+            return Err(format!("DeepSeek 会话在编辑期间已被其他进程修改，已停止保存：{}", write.path.display()));
         }
         let temp = sibling_path(&write.path, &format!("asv-write-{transaction}.tmp"))?;
         let backup = sibling_path(&write.path, &format!("asv-write-{transaction}.bak"))?;
@@ -646,6 +835,12 @@ fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
 
     for (index, write) in writes.iter().enumerate() {
         let (temp, backup) = &staged[index];
+        if !fs::read(&write.path)
+            .is_ok_and(|current| current.as_slice() == write.original.as_slice())
+        {
+            let restore_errors = rollback_writes(&writes, &staged, index);
+            return Err(format!("DeepSeek 会话在写入期间已被其他进程修改，已停止保存：{}{restore_errors}", write.path.display()));
+        }
         if let Err(error) = fs::rename(&write.path, backup) {
             let restore_errors = rollback_writes(&writes, &staged, index);
             return Err(format!("备份 DeepSeek 原文件失败：{error}{restore_errors}"));
@@ -653,6 +848,22 @@ fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
         if let Err(error) = fs::rename(temp, &write.path) {
             let restore_errors = rollback_writes(&writes, &staged, index + 1);
             return Err(format!("保存 DeepSeek 修改失败：{error}{restore_errors}"));
+        }
+    }
+    // An open DSH handle may continue appending to the inode after it has
+    // been moved to the backup path. Keep every backup if either side changed
+    // while the replacement was being published.
+    for (index, write) in writes.iter().enumerate() {
+        let backup = &staged[index].1;
+        let backup_unchanged = fs::read(backup)
+            .is_ok_and(|current| current.as_slice() == write.original.as_slice());
+        let replacement_unchanged = fs::read(&write.path)
+            .is_ok_and(|current| current.as_slice() == write.bytes.as_slice());
+        if !backup_unchanged || !replacement_unchanged {
+            return Err(format!(
+                "DeepSeek 会话在保存期间被其他进程修改，已保留备份供恢复：{}",
+                backup.display()
+            ));
         }
     }
     for (_, backup) in staged {
@@ -667,26 +878,81 @@ fn rollback_writes(
     backup_count: usize,
 ) -> String {
     let mut errors = Vec::new();
+    let mut preserved = Vec::new();
     for index in (0..backup_count).rev() {
         let original = &writes[index].path;
         let backup = &staged[index].1;
-        if original.exists() {
-            if let Err(error) = fs::remove_file(original) {
-                errors.push(format!("无法移除失败后的文件 {}：{error}", original.display()));
+        let backup_bytes = match fs::read(backup) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                errors.push(format!("无法读取备份 {}：{error}", backup.display()));
+                continue;
+            }
+        };
+        let backup_changed = backup_bytes != writes[index].original;
+        match fs::read(original) {
+            Ok(current) if current != writes[index].bytes => {
+                errors.push(format!("文件 {} 已被其他进程修改，未覆盖；备份已保留", original.display()));
+                continue;
+            }
+            Ok(_) => {
+                // Move our replacement aside instead of deleting it. An open
+                // handle can append between the byte check and this rename;
+                // those bytes then remain available in the preserved sibling.
+                let kept = match sibling_path(
+                    original,
+                    &format!("asv-rollback-preserved-{}", uuid::Uuid::new_v4()),
+                ) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        errors.push(error);
+                        continue;
+                    }
+                };
+                if let Err(error) = fs::rename(original, &kept) {
+                    errors.push(format!("无法保留失败后的文件 {}：{error}", original.display()));
+                    continue;
+                }
+                preserved.push(kept);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                errors.push(format!("无法读取失败后的文件 {}：{error}", original.display()));
                 continue;
             }
         }
-        if let Err(error) = fs::rename(backup, original) {
+        // hard_link claims an absent destination without replacing a file
+        // another process may have created after we moved our copy aside.
+        if let Err(error) = fs::hard_link(backup, original) {
             errors.push(format!("无法从备份 {} 恢复：{error}", backup.display()));
+            continue;
+        }
+        if backup_changed {
+            // DSH may have appended through an open handle after original was
+            // renamed to backup. Both names now refer to those latest bytes;
+            // retain the backup for review and keep the session path usable.
+            errors.push(format!("备份 {} 已被其他进程修改，已恢复原路径并保留备份", backup.display()));
+            continue;
+        }
+        if let Err(error) = fs::remove_file(backup) {
+            errors.push(format!("已恢复文件，但无法清理备份 {}：{error}", backup.display()));
         }
     }
     for (temp, _) in staged {
         let _ = fs::remove_file(temp);
     }
-    if errors.is_empty() {
+    let kept_note = if preserved.is_empty() {
         String::new()
     } else {
-        format!("；自动恢复未完成：{}", errors.join("；"))
+        format!(
+            "；失败写入文件已保留：{}",
+            preserved.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("、")
+        )
+    };
+    if errors.is_empty() {
+        kept_note
+    } else {
+        format!("；自动恢复未完成：{}{kept_note}", errors.join("；"))
     }
 }
 
@@ -701,7 +967,9 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
     let mut primary_is_last = false;
     let mut primary_target_seq = None;
     for candidate in paths {
-        let mut rows = decode_rows(&candidate)?;
+        let original = fs::read(&candidate)
+            .map_err(|error| format!("读取 DeepSeek 原会话失败：{error}"))?;
+        let mut rows = decode_rows_from_bytes(&original)?;
         let contains_message = rows
             .iter()
             .enumerate()
@@ -716,7 +984,7 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
             primary_target_seq = target_seq;
             primary_rows = Some(rows.clone());
         }
-        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)? });
+        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)?, original });
     }
     if primary_is_last {
         let role = primary_role.as_deref().unwrap_or("assistant");
@@ -740,7 +1008,9 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
     let mut primary_was_last = false;
     let mut primary_target_seq = None;
     for candidate in paths {
-        let mut rows = decode_rows(&candidate)?;
+        let original = fs::read(&candidate)
+            .map_err(|error| format!("读取 DeepSeek 原会话失败：{error}"))?;
+        let mut rows = decode_rows_from_bytes(&original)?;
         let contains_message = rows
             .iter()
             .enumerate()
@@ -755,7 +1025,7 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
             primary_target_seq = target_seq;
             primary_rows = Some(rows.clone());
         }
-        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)? });
+        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)?, original });
     }
     if primary_was_last {
         let role = primary_role.as_deref().unwrap_or("assistant");
@@ -843,6 +1113,157 @@ mod tests {
     }
 
     #[test]
+    fn encoded_log_has_independent_header_frame_and_legacy_plugin_marker() {
+        let rows = [
+            serde_json::json!({"type":"session","version":4,"id":"session-1","createdAt":1000,"cwd":"C:\\work"}),
+            serde_json::json!({"type":"turn/start","seq":0,"time":1001,"data":{"turn":1}}),
+            serde_json::json!({"type":"plugin:pentest-submission","seq":1,"time":1002,"data":{"submissionId":"test"}}),
+        ];
+        let bytes = encode_rows(&rows).unwrap();
+        let first_size = zstd::zstd_safe::find_frame_compressed_size(&bytes).unwrap();
+        assert!(first_size < bytes.len(), "event rows require a second frame");
+        let header = zstd::stream::decode_all(&bytes[..first_size]).unwrap();
+        let header_text = std::str::from_utf8(&header).unwrap();
+        assert!(header_text.ends_with('\n'));
+        assert_eq!(header_text.lines().count(), 1);
+        assert_eq!(serde_json::from_str::<Value>(header_text).unwrap(), rows[0]);
+        let body = zstd::stream::decode_all(&bytes[first_size..]).unwrap();
+        let events = body
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], rows[1]);
+        assert_eq!(events[1].get("ignorable"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn refuses_to_remove_a_tool_call_message_without_touching_its_log() {
+        let root = std::env::temp_dir().join(format!("dsh-tool-delete-{}", uuid::Uuid::new_v4()));
+        let path = root.join("sessions").join("workspace").join("session-1").join(SESSION_FILES[0]);
+        write_compressed(&path, &[
+            serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
+            serde_json::json!({"type":"assistant/message","seq":0,"data":{"message":{"id":"a1","content":[{"type":"tool-call","id":"call-1","name":"test","arguments":"{}"}]}}}),
+            serde_json::json!({"type":"tool/call","seq":1,"data":{"callId":"call-1","name":"test"}}),
+        ]);
+        let before = fs::read(&path).unwrap();
+        assert!(delete_message(&path, "a1").unwrap_err().contains("工具调用"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refuses_to_edit_an_assistant_without_a_matching_stream() {
+        let root = std::env::temp_dir().join(format!("dsh-unsafe-edit-{}", uuid::Uuid::new_v4()));
+        let path = root.join("sessions").join("workspace").join("session-1").join(SESSION_FILES[0]);
+        write_compressed(&path, &[
+            serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
+            serde_json::json!({"type":"assistant/message","seq":0,"data":{"stream":[{"type":"text-chunks","time0":1,"index":0,"dt":[],"texts":["old"]}],"message":{"id":"a1","content":[{"type":"text","text":"old"}]}}}),
+        ]);
+        let before = fs::read(&path).unwrap();
+        assert!(edit_message(&path, "a1", "new").unwrap_err().contains("流格式无法安全同步"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_external_append() {
+        let root = std::env::temp_dir().join(format!("dsh-concurrent-write-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.v4.jsonl.zstd");
+        fs::write(&path, b"original").unwrap();
+        let prepared = PreparedWrite {
+            path: path.clone(),
+            bytes: b"viewer edit".to_vec(),
+            original: b"original".to_vec(),
+        };
+        fs::write(&path, b"original plus DSH append").unwrap();
+        assert!(commit_writes(vec![prepared]).unwrap_err().contains("其他进程修改"));
+        assert_eq!(fs::read(&path).unwrap(), b"original plus DSH append");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollback_preserves_viewer_copy_and_never_removes_concurrent_content() {
+        let root = std::env::temp_dir().join(format!("dsh-rollback-preserve-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.v4.jsonl.zstd");
+        let backup = sibling_path(&path, "test.bak").unwrap();
+        let temp = sibling_path(&path, "test.tmp").unwrap();
+        let write = PreparedWrite {
+            path: path.clone(),
+            bytes: b"viewer edit".to_vec(),
+            original: b"original".to_vec(),
+        };
+        let staged = vec![(temp, backup.clone())];
+
+        fs::write(&path, &write.bytes).unwrap();
+        fs::write(&backup, &write.original).unwrap();
+        let note = rollback_writes(std::slice::from_ref(&write), &staged, 1);
+        assert!(note.contains("失败写入文件已保留"));
+        assert_eq!(fs::read(&path).unwrap(), write.original);
+        assert!(!backup.exists());
+        let kept = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|file| file.to_string_lossy().contains("asv-rollback-preserved-"))
+            .collect::<Vec<_>>();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(&kept[0]).unwrap(), write.bytes);
+
+        fs::write(&path, b"viewer edit plus DSH append").unwrap();
+        fs::write(&backup, &write.original).unwrap();
+        let error = rollback_writes(std::slice::from_ref(&write), &staged, 1);
+        assert!(error.contains("未覆盖"));
+        assert_eq!(fs::read(&path).unwrap(), b"viewer edit plus DSH append");
+        assert_eq!(fs::read(&backup).unwrap(), write.original);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollback_restores_a_backup_appended_after_rename() {
+        let root = std::env::temp_dir().join(format!("dsh-rollback-appended-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.v4.jsonl.zstd");
+        let backup = sibling_path(&path, "test.bak").unwrap();
+        let temp = sibling_path(&path, "test.tmp").unwrap();
+        let write = PreparedWrite {
+            path: path.clone(),
+            bytes: b"viewer edit".to_vec(),
+            original: b"original".to_vec(),
+        };
+        let staged = vec![(temp, backup.clone())];
+        let appended = b"original plus DSH append";
+
+        // original was renamed to backup, DSH appended through its open
+        // handle, and publishing the staged Viewer file failed.
+        fs::write(&backup, appended).unwrap();
+        let note = rollback_writes(std::slice::from_ref(&write), &staged, 1);
+        assert!(note.contains("已恢复原路径并保留备份"));
+        assert_eq!(fs::read(&path).unwrap(), appended);
+        assert_eq!(fs::read(&backup).unwrap(), appended);
+
+        // The same recovery must preserve a Viewer replacement as well.
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, &write.bytes).unwrap();
+        let note = rollback_writes(std::slice::from_ref(&write), &staged, 1);
+        assert!(note.contains("失败写入文件已保留"));
+        assert_eq!(fs::read(&path).unwrap(), appended);
+        assert_eq!(fs::read(&backup).unwrap(), appended);
+        let kept = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|file| file.to_string_lossy().contains("asv-rollback-preserved-"))
+            .collect::<Vec<_>>();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(&kept[0]).unwrap(), write.bytes);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn edits_and_deletes_both_versions_and_syncs_last_turn_projection() {
         let root = std::env::temp_dir().join(format!("dsh-edit-provider-{}", uuid::Uuid::new_v4()));
         let session_dir = root.join("sessions").join("workspace").join("session-1");
@@ -850,12 +1271,16 @@ mod tests {
         let v3 = session_dir.join(SESSION_FILES[1]);
         let rows = vec![
             serde_json::json!({"type":"session","version":4,"id":"session-1","seq":0,"createdAt":1000,"cwd":"C:\\work"}),
-            serde_json::json!({"type":"agent/inbox/spliced","seq":1,"data":{"inserted":[{"id":"u1","content":[{"type":"text","text":"question"}]}]}}),
+            serde_json::json!({"type":"agent/inbox/spliced","seq":0,"data":{"inserted":[{"id":"u1","content":[{"type":"text","text":"question"}]}]}}),
             serde_json::json!({"type":"user/message","seq":1,"time":2000,"data":{"id":"u1","content":[{"type":"text","text":"question"}]}}),
             serde_json::json!({"type":"assistant/message","seq":2,"time":3000,"data":{"turn":1,"message":{"id":"a1","content":[{"type":"text","text":"first answer"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
-            serde_json::json!({"type":"assistant/message","seq":3,"time":4000,"data":{"turn":1,"message":{"id":"a2","content":[{"type":"reasoning","text":"private"},{"type":"text","text":"old answer"},{"type":"tool-call","id":"call-1","name":"test"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
-            serde_json::json!({"type":"tool/call","seq":4,"data":{"callId":"call-1","name":"test"}}),
-            serde_json::json!({"type":"tool/result","seq":5,"data":{"message":{"toolCallId":"call-1","content":[]}}}),
+            serde_json::json!({"type":"assistant/message","seq":3,"time":4000,"data":{"turn":1,"stream":[
+                {"type":"chunk","time":4000,"chunk":{"type":"block-start","index":0,"blockType":"reasoning"}},
+                {"type":"chunk","time":4001,"chunk":{"type":"block-end","index":0,"block":{"type":"reasoning","text":"private"}}},
+                {"type":"chunk","time":4002,"chunk":{"type":"block-start","index":1,"blockType":"text"}},
+                {"type":"text-chunks","time0":4003,"index":1,"dt":[],"texts":["old answer"]},
+                {"type":"chunk","time":4004,"chunk":{"type":"block-end","index":1,"block":{"type":"text","text":"old answer"}}}
+            ],"message":{"id":"a2","content":[{"type":"reasoning","text":"private"},{"type":"text","text":"old answer"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
         ];
         write_compressed(&v4, &rows);
         write_compressed(&v3, &rows);
@@ -888,6 +1313,9 @@ mod tests {
             assert!(messages[2].content.iter().any(|block| {
                 matches!(block, DisplayContentBlock::Reasoning { text } if text == "private")
             }));
+            let rows = decode_rows(path).unwrap();
+            assert_eq!(rows[4].pointer("/data/stream/3/texts/0").and_then(Value::as_str), Some("updated answer"));
+            assert_eq!(rows[4].pointer("/data/stream/4/chunk/block/text").and_then(Value::as_str), Some("updated answer"));
         }
         let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
         assert_eq!(
@@ -900,8 +1328,11 @@ mod tests {
             let messages = parse_all_messages(path).unwrap();
             assert_eq!(messages.len(), 2);
             assert_eq!(messages[1].uuid.as_deref(), Some("a1"));
-            assert!(!decode_rows(path).unwrap().iter().any(|row| {
-                matches!(row.get("type").and_then(Value::as_str), Some("tool/call" | "tool/result"))
+            let rows = decode_rows(path).unwrap();
+            assert_eq!(rows[4].pointer("/data/message/content"), Some(&serde_json::json!([])));
+            assert_eq!(rows[4].pointer("/data/stream"), Some(&serde_json::json!([])));
+            assert!(rows.iter().skip(1).enumerate().all(|(index, row)| {
+                row.get("seq").and_then(Value::as_u64) == Some(index as u64)
             }));
         }
         let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
@@ -920,7 +1351,8 @@ mod tests {
         delete_message(&v4, "u1").unwrap();
         for path in [&v4, &v3] {
             let rows = decode_rows(path).unwrap();
-            assert!(rows[1].pointer("/data/inserted").and_then(Value::as_array).unwrap().is_empty());
+            assert_eq!(rows[1].pointer("/data/inserted/0/content"), Some(&serde_json::json!([])));
+            assert_eq!(rows[2].pointer("/data/content"), Some(&serde_json::json!([])));
             assert_eq!(parse_all_messages(path).unwrap().len(), 1);
         }
 
@@ -936,11 +1368,11 @@ mod tests {
             .join("session-1")
             .join(SESSION_FILES[0]);
         write_compressed(&path, &[
-            serde_json::json!({"type":"session","id":"session-1","cwd":"C:\\work"}),
-            serde_json::json!({"type":"turn/start","seq":1,"data":{"turn":1}}),
-            serde_json::json!({"type":"user/message","seq":2,"data":{"id":"u1","content":[{"type":"text","text":"old"}]}}),
-            serde_json::json!({"type":"turn/start","seq":5,"data":{"turn":2}}),
-            serde_json::json!({"type":"assistant/message","seq":6,"data":{"turn":2,"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
+            serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
+            serde_json::json!({"type":"turn/start","seq":0,"data":{"turn":1}}),
+            serde_json::json!({"type":"user/message","seq":1,"data":{"id":"u1","content":[{"type":"text","text":"old"}]}}),
+            serde_json::json!({"type":"turn/start","seq":2,"data":{"turn":2}}),
+            serde_json::json!({"type":"assistant/message","seq":3,"data":{"turn":2,"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
         ]);
         let cache = root
             .join("storages")
@@ -950,8 +1382,8 @@ mod tests {
         fs::create_dir_all(cache.parent().unwrap()).unwrap();
         fs::write(&cache, serde_json::json!({
             "record":{"rows":{"turnOutline":{"val":{"turns":[
-                {"turn":1,"seq":1,"prompt":"old","response":""},
-                {"turn":2,"seq":5,"prompt":"","response":"answer"}
+                {"turn":1,"seq":0,"prompt":"old","response":""},
+                {"turn":2,"seq":2,"prompt":"","response":"answer"}
             ]}}}}
         }).to_string()).unwrap();
         let old_backup = sibling_path(&path, "asv-write.bak").unwrap();

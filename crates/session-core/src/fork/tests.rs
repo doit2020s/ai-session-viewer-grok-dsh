@@ -175,14 +175,11 @@ fn dsh_fork_recompresses_history_through_selected_round() {
     let path = original.join("session.v3.jsonl.zstd");
     let rows = vec![
         json!({"type":"session","version":3,"id":"session-old","createdAt":1000,"cwd":"C:\\work"}),
-        json!({"type":"user/message","seq":1,"time":2000,"data":{"id":"u1","content":[{"type":"text","text":"first"}]}}),
-        json!({"type":"assistant/message","seq":2,"time":3000,"data":{"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
-        json!({"type":"user/message","seq":3,"time":4000,"data":{"id":"u2","content":[{"type":"text","text":"future"}]}}),
+        json!({"type":"user/message","seq":0,"time":2000,"data":{"id":"u1","content":[{"type":"text","text":"first"}]}}),
+        json!({"type":"assistant/message","seq":1,"time":3000,"data":{"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
+        json!({"type":"user/message","seq":2,"time":4000,"data":{"id":"u2","content":[{"type":"text","text":"future"}]}}),
     ];
-    let file = fs::File::create(&path).unwrap();
-    let mut encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
-    encoder.write_all(&jsonl(&rows)).unwrap();
-    encoder.finish().unwrap();
+    fs::write(&path, dsh::encode_rows(&rows).unwrap()).unwrap();
     fs::write(original.join("attachment.txt"), "owned").unwrap();
 
     let parsed = read_records_for_kind(SessionSourceKind::Dsh, &path).unwrap();

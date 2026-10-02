@@ -506,15 +506,19 @@ export const MessageThread = memo(function MessageThread({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !deleteSaving && setDeletingMessage(null)}>
       <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-lg font-semibold">删除{deletingMessage.reasoning && source === "dsh" ? "回复及思考过程" : deletingMessage.reasoning ? "思考过程" : "指定上下文"}</h3>
+          <h3 className="text-lg font-semibold">{source === "dsh" ? "清空" : "删除"}{deletingMessage.reasoning && source === "dsh" ? "回复及思考过程" : deletingMessage.reasoning ? "思考过程" : "指定上下文"}</h3>
           <button onClick={() => setDeletingMessage(null)} disabled={deleteSaving}><X className="h-4 w-4" /></button>
         </div>
-        <p className="text-sm text-muted-foreground">该内容会同时从聊天记录和 {editableProviderName} 原生上下文中删除。</p>
+        <p className="text-sm text-muted-foreground">
+          {source === "dsh"
+            ? "请先完全关闭 DSH Desktop 和正在使用此会话的 CLI。将清空这条消息及其流数据中的正文和思考内容；DSH 事件和空用户轮次会保留。含工具调用的回复会拒绝处理，以保护会话。"
+            : `该内容会同时从聊天记录和 ${editableProviderName} 原生上下文中删除。`}
+        </p>
         {deletingMessage.preview && <p className="mt-3 max-h-32 overflow-auto rounded-md border border-border bg-muted/40 p-3 text-sm whitespace-pre-wrap">{deletingMessage.preview}</p>}
         {deleteError && <p className="mt-2 text-sm text-destructive">删除失败：{deleteError}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setDeletingMessage(null)} disabled={deleteSaving}>取消</button>
-          <button className="inline-flex items-center gap-1 rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground" onClick={confirmDeleteMessage} disabled={deleteSaving}><Trash2 className="h-3.5 w-3.5" />{deleteSaving ? "删除中…" : "确认删除"}</button>
+          <button className="inline-flex items-center gap-1 rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground" onClick={confirmDeleteMessage} disabled={deleteSaving}><Trash2 className="h-3.5 w-3.5" />{deleteSaving ? "处理中…" : source === "dsh" ? "确认清空" : "确认删除"}</button>
         </div>
       </div>
     </div>
@@ -638,9 +642,9 @@ export const MessageThread = memo(function MessageThread({
                 type="button"
                 onClick={() => openDeleteDialog(msg)}
                 className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-destructive/40 bg-background/70 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
-                title={`从 ${editableProviderName} 上下文中删除此消息`}
+                title={source === "dsh" ? "清空此消息的正文和思考内容" : `从 ${editableProviderName} 上下文中删除此消息`}
               >
-                <Trash2 className="h-3.5 w-3.5" />删除
+                <Trash2 className="h-3.5 w-3.5" />{source === "dsh" ? "清空" : "删除"}
               </button>
             )}
             {canResume && (
@@ -706,11 +710,13 @@ export const MessageThread = memo(function MessageThread({
               type="button"
               onClick={() => openDeleteDialog(msg)}
               className="inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-background/70 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
-              title={msg.content.some((block) => block.type === "reasoning")
-                ? source === "dsh" ? "删除此回复及思考过程" : "删除此思考过程"
-                : `从 ${editableProviderName} 上下文中删除此回复`}
+              title={source === "dsh"
+                ? "清空此回复及思考内容"
+                : msg.content.some((block) => block.type === "reasoning")
+                  ? "删除此思考过程"
+                  : `从 ${editableProviderName} 上下文中删除此回复`}
             >
-              <Trash2 className="h-3.5 w-3.5" />删除
+              <Trash2 className="h-3.5 w-3.5" />{source === "dsh" ? "清空" : "删除"}
             </button>
           </div>
         )}
@@ -765,6 +771,7 @@ export const MessageThread = memo(function MessageThread({
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !editSaving && setEditingMessage(null)}>
             <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
               <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 {editableProviderName} 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
+              {source === "dsh" && <p className="mb-2 text-sm text-muted-foreground">保存前请完全关闭 DSH Desktop 和正在使用此会话的 CLI。</p>}
               <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-56 w-full rounded-md border border-border bg-background p-3 text-sm outline-none focus:border-primary" autoFocus />
               {editError && <p className="mt-2 text-sm text-destructive">保存失败：{editError}</p>}
               <div className="mt-4 flex justify-end gap-2"><button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setEditingMessage(null)} disabled={editSaving}>取消</button><button className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={saveEditedMessage} disabled={editSaving || !editText.trim()}><Save className="h-3.5 w-3.5" />{editSaving ? "保存中…" : "保存"}</button></div>
@@ -786,6 +793,7 @@ export const MessageThread = memo(function MessageThread({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !editSaving && setEditingMessage(null)}>
           <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 {editableProviderName} 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
+            {source === "dsh" && <p className="mb-2 text-sm text-muted-foreground">保存前请完全关闭 DSH Desktop 和正在使用此会话的 CLI。</p>}
             <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-56 w-full rounded-md border border-border bg-background p-3 text-sm outline-none focus:border-primary" autoFocus />
             {editError && <p className="mt-2 text-sm text-destructive">保存失败：{editError}</p>}
             <div className="mt-4 flex justify-end gap-2"><button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setEditingMessage(null)} disabled={editSaving}>取消</button><button className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={saveEditedMessage} disabled={editSaving || !editText.trim()}><Save className="h-3.5 w-3.5" />{editSaving ? "保存中…" : "保存"}</button></div>

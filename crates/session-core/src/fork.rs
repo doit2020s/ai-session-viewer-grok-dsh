@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Cursor, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -393,7 +393,7 @@ fn fork_dsh(path: &Path, rows: &[Record], target: usize) -> Result<ForkResult, S
         &staging,
         &["session.v3.jsonl.zstd", "session.v4.jsonl.zstd"],
     )?;
-    let compressed = zstd::stream::encode_all(Cursor::new(jsonl(&history)), 3)
+    let compressed = dsh::encode_rows(&history)
         .map_err(|e| format!("压缩 DeepSeek Harness 分叉失败：{e}"));
     let result = compressed.and_then(|bytes| {
         write_new(&staging.join(source_file_name), &bytes)?;
