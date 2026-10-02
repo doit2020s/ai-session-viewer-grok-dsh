@@ -447,7 +447,8 @@ export const MessageThread = memo(function MessageThread({
     }
   };
   const showActionButtons = Boolean(filePath);
-  const canEdit = source === "grok" && __IS_TAURI__ && Boolean(filePath);
+  const canEdit = (source === "grok" || source === "dsh") && __IS_TAURI__ && Boolean(filePath);
+  const editableProviderName = source === "dsh" ? "DeepSeek" : "Grok";
   const openEditor = (message: DisplayMessage) => {
     if (!message.uuid) return;
     const text = message.content
@@ -505,10 +506,10 @@ export const MessageThread = memo(function MessageThread({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !deleteSaving && setDeletingMessage(null)}>
       <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-lg font-semibold">删除{deletingMessage.reasoning ? "思考过程" : "指定上下文"}</h3>
+          <h3 className="text-lg font-semibold">删除{deletingMessage.reasoning && source === "dsh" ? "回复及思考过程" : deletingMessage.reasoning ? "思考过程" : "指定上下文"}</h3>
           <button onClick={() => setDeletingMessage(null)} disabled={deleteSaving}><X className="h-4 w-4" /></button>
         </div>
-        <p className="text-sm text-muted-foreground">该内容会同时从聊天记录和 Grok 终端恢复上下文中删除。</p>
+        <p className="text-sm text-muted-foreground">该内容会同时从聊天记录和 {editableProviderName} 原生上下文中删除。</p>
         {deletingMessage.preview && <p className="mt-3 max-h-32 overflow-auto rounded-md border border-border bg-muted/40 p-3 text-sm whitespace-pre-wrap">{deletingMessage.preview}</p>}
         {deleteError && <p className="mt-2 text-sm text-destructive">删除失败：{deleteError}</p>}
         <div className="mt-4 flex justify-end gap-2">
@@ -637,7 +638,7 @@ export const MessageThread = memo(function MessageThread({
                 type="button"
                 onClick={() => openDeleteDialog(msg)}
                 className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-destructive/40 bg-background/70 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
-                title="从 Grok 上下文中删除此消息"
+                title={`从 ${editableProviderName} 上下文中删除此消息`}
               >
                 <Trash2 className="h-3.5 w-3.5" />删除
               </button>
@@ -692,7 +693,7 @@ export const MessageThread = memo(function MessageThread({
         </div>
         {canEdit && msg.uuid && (
           <div className="mt-1 flex items-center gap-1">
-            {!msg.content.some((block) => block.type === "reasoning") && <button
+            {(!msg.content.some((block) => block.type === "reasoning") || source === "dsh") && <button
               type="button"
               onClick={() => openEditor(msg)}
               className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -704,7 +705,9 @@ export const MessageThread = memo(function MessageThread({
               type="button"
               onClick={() => openDeleteDialog(msg)}
               className="inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-background/70 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
-              title={msg.content.some((block) => block.type === "reasoning") ? "删除此思考过程" : "从 Grok 上下文中删除此回复"}
+              title={msg.content.some((block) => block.type === "reasoning")
+                ? source === "dsh" ? "删除此回复及思考过程" : "删除此思考过程"
+                : `从 ${editableProviderName} 上下文中删除此回复`}
             >
               <Trash2 className="h-3.5 w-3.5" />删除
             </button>
@@ -760,7 +763,7 @@ export const MessageThread = memo(function MessageThread({
         {editingMessage && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !editSaving && setEditingMessage(null)}>
             <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
-              <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 Grok 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
+              <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 {editableProviderName} 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
               <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-56 w-full rounded-md border border-border bg-background p-3 text-sm outline-none focus:border-primary" autoFocus />
               {editError && <p className="mt-2 text-sm text-destructive">保存失败：{editError}</p>}
               <div className="mt-4 flex justify-end gap-2"><button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setEditingMessage(null)} disabled={editSaving}>取消</button><button className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={saveEditedMessage} disabled={editSaving || !editText.trim()}><Save className="h-3.5 w-3.5" />{editSaving ? "保存中…" : "保存"}</button></div>
@@ -781,7 +784,7 @@ export const MessageThread = memo(function MessageThread({
       {editingMessage && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !editSaving && setEditingMessage(null)}>
           <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 Grok 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
+            <div className="mb-3 flex items-center justify-between"><h3 className="text-lg font-semibold">编辑 {editableProviderName} 会话上下文</h3><button onClick={() => setEditingMessage(null)} disabled={editSaving}><X className="h-4 w-4" /></button></div>
             <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="min-h-56 w-full rounded-md border border-border bg-background p-3 text-sm outline-none focus:border-primary" autoFocus />
             {editError && <p className="mt-2 text-sm text-destructive">保存失败：{editError}</p>}
             <div className="mt-4 flex justify-end gap-2"><button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setEditingMessage(null)} disabled={editSaving}>取消</button><button className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={saveEditedMessage} disabled={editSaving || !editText.trim()}><Save className="h-3.5 w-3.5" />{editSaving ? "保存中…" : "保存"}</button></div>

@@ -22,16 +22,16 @@
 
 ---
 
-**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI、DeepSeek Harness、Kiro 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。六种来源均支持浏览、搜索、导出、标签/别名与删除。Claude、Codex、Grok 和 Oh My Pi 支持从原生 CLI 恢复会话，并可在应用内新建或继续对话。DeepSeek Harness 当前提供本地 V3 压缩会话的完整只读展示与管理。
+**AI Session Viewer** 是一个轻量级应用，让你可以在一个统一界面中浏览、搜索来自 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[OpenAI Codex CLI](https://github.com/openai/codex)、Grok CLI、DeepSeek Harness、Kiro 和 [Oh My Pi](https://github.com/can1357/oh-my-pi) 的本地会话。六种来源均支持浏览、搜索、导出、标签/别名与删除。Claude、Codex、Grok 和 Oh My Pi 支持从原生 CLI 恢复会话，并可在应用内新建或继续对话。DeepSeek Harness 支持本地 V3/V4 压缩会话展示、上下文编辑与删除。
 
 本应用**仅处理本地会话文件**，不上传任何数据；删除、标签、别名等写操作只在用户主动触发时执行。
 
 ## 本分支新增功能
 
-- 原生读取 DeepSeek Harness session.v3.jsonl.zstd V3 事件日志。
+- 原生读取 DeepSeek Harness `session.v3.jsonl.zstd` 与 `session.v4.jsonl.zstd` 事件日志。
 - 原生读取 Kiro `session.json` 与 `messages.jsonl`，保留标题、工作区、模型和工具调用。
 - 按 DSH 工作区展示会话标题、用户消息、回答、思考过程和工具调用。
-- DeepSeek 会话支持搜索、导出、别名、标签和回收站删除。
+- DeepSeek 会话支持搜索、导出、别名、标签、回收站删除和指定消息编辑/删除；并存的 V3/V4 记录会同步修改，最后一条消息还会同步到 `session_projcache` 配置。
 - Grok 会话支持原生名称识别、应用内新建并继续原生 CLI 会话、终端恢复、上下文编辑与删除，以及直接打开会话目录。
 - 会话页支持批量打包原始会话文件为 ZIP，并将整包还原到当前工作区；适合跨电脑、跨工作区迁移，重复 ID 自动跳过。
 - 删除会话时会同时处理该会话专属的附件、快照、工具结果和状态文件；桌面端作为一个回收站条目整体删除与还原。

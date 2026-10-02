@@ -383,11 +383,20 @@ fn fork_dsh(path: &Path, rows: &[Record], target: usize) -> Result<ForkResult, S
         .to_string();
     let destination = project_dir.join(&id);
     let staging = project_dir.join(format!(".{id}.fork-tmp"));
-    copy_session_extras(source_dir, &staging, &["session.v3.jsonl.zstd"])?;
+    let source_file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| matches!(*name, "session.v3.jsonl.zstd" | "session.v4.jsonl.zstd"))
+        .ok_or("DeepSeek Harness 会话文件名无效")?;
+    copy_session_extras(
+        source_dir,
+        &staging,
+        &["session.v3.jsonl.zstd", "session.v4.jsonl.zstd"],
+    )?;
     let compressed = zstd::stream::encode_all(Cursor::new(jsonl(&history)), 3)
         .map_err(|e| format!("压缩 DeepSeek Harness 分叉失败：{e}"));
     let result = compressed.and_then(|bytes| {
-        write_new(&staging.join("session.v3.jsonl.zstd"), &bytes)?;
+        write_new(&staging.join(source_file_name), &bytes)?;
         publish_directory_fork(&staging, &destination)
     });
     if let Err(error) = result {
@@ -397,7 +406,7 @@ fn fork_dsh(path: &Path, rows: &[Record], target: usize) -> Result<ForkResult, S
     Ok(ForkResult {
         new_session_id: id,
         new_file_path: destination
-            .join("session.v3.jsonl.zstd")
+            .join(source_file_name)
             .to_string_lossy()
             .into_owned(),
         project_path: project,

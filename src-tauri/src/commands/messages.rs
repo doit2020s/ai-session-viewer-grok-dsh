@@ -80,9 +80,7 @@ pub async fn get_messages(
     result
 }
 
-/// Edit a Grok message directly in its JSONL transcript. Other providers keep
-/// their native transcript formats untouched until a provider-specific editor
-/// is implemented.
+/// Edit a Grok or DeepSeek message directly in its native transcript.
 #[tauri::command]
 pub async fn edit_message(
     source: String,
@@ -90,11 +88,12 @@ pub async fn edit_message(
     message_id: String,
     text: String,
 ) -> Result<(), String> {
-    if source != "grok" {
-        return Err("当前只支持编辑 Grok 会话".to_string());
-    }
     let path = validate_session_file(&source, &file_path)?;
-    tauri::async_runtime::spawn_blocking(move || grok::edit_message(&path, &message_id, &text))
+    tauri::async_runtime::spawn_blocking(move || match source.as_str() {
+        "grok" => grok::edit_message(&path, &message_id, &text),
+        "dsh" => dsh::edit_message(&path, &message_id, &text),
+        _ => Err("当前只支持编辑 Grok 和 DeepSeek 会话".to_string()),
+    })
         .await
         .map_err(|error| format!("消息编辑任务失败: {error}"))?
 }
@@ -105,11 +104,12 @@ pub async fn delete_message(
     file_path: String,
     message_id: String,
 ) -> Result<(), String> {
-    if source != "grok" {
-        return Err("当前只支持删除 Grok 会话上下文".to_string());
-    }
     let path = validate_session_file(&source, &file_path)?;
-    tauri::async_runtime::spawn_blocking(move || grok::delete_message(&path, &message_id))
+    tauri::async_runtime::spawn_blocking(move || match source.as_str() {
+        "grok" => grok::delete_message(&path, &message_id),
+        "dsh" => dsh::delete_message(&path, &message_id),
+        _ => Err("当前只支持删除 Grok 和 DeepSeek 会话上下文".to_string()),
+    })
         .await
         .map_err(|error| format!("消息删除任务失败: {error}"))?
 }

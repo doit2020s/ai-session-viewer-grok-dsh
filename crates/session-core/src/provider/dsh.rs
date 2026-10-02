@@ -12,7 +12,7 @@ use crate::models::message::{
 use crate::models::project::ProjectEntry;
 use crate::models::session::{SessionIndexEntry, SessionStatus};
 
-const SESSION_FILE: &str = "session.v3.jsonl.zstd";
+const SESSION_FILES: [&str; 2] = ["session.v4.jsonl.zstd", "session.v3.jsonl.zstd"];
 
 pub fn get_sessions_dir() -> Option<PathBuf> {
     std::env::var_os("DSH_HOME")
@@ -132,8 +132,13 @@ fn session_files(project_dir: &Path) -> Vec<PathBuf> {
         .into_iter()
         .flatten()
         .flatten()
-        .map(|entry| entry.path().join(SESSION_FILE))
-        .filter(|path| path.is_file())
+        .filter_map(|entry| {
+            let session_dir = entry.path();
+            SESSION_FILES
+                .iter()
+                .map(|name| session_dir.join(name))
+                .find(|path| path.is_file())
+        })
         .collect()
 }
 
@@ -314,6 +319,355 @@ pub fn delete_project(project_id: &str) -> Result<super::claude::DeleteResult, S
     })
 }
 
+struct PreparedWrite {
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+fn message_value(row: &Value) -> Option<(&str, &Value)> {
+    let data = row.get("data")?;
+    match row.get("type").and_then(Value::as_str)? {
+        "user/message" => Some(("user", data)),
+        "assistant/message" => Some(("assistant", data.get("message")?)),
+        _ => None,
+    }
+}
+
+fn row_message_id(index: usize, row: &Value) -> Option<String> {
+    let (_, message) = message_value(row)?;
+    message
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| row.get("seq").map(|seq| format!("dsh-{seq}")))
+        .or_else(|| Some(format!("dsh-line-{index}")))
+}
+
+fn content_text(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return (!text.trim().is_empty()).then(|| text.to_string());
+    }
+    let text = content
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn visible_text(row: &Value) -> Option<(&str, String)> {
+    let (role, message) = message_value(row)?;
+    Some((role, content_text(message.get("content")?)?))
+}
+
+fn replace_content_text(content: &mut Value, text: &str) -> Result<(), String> {
+    match content {
+        Value::String(value) => {
+            *value = text.to_string();
+            Ok(())
+        }
+        Value::Array(blocks) => {
+            let first_text = blocks
+                .iter()
+                .position(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                .ok_or_else(|| "该 DeepSeek 消息没有可编辑的文本块".to_string())?;
+            blocks[first_text]["text"] = Value::String(text.to_string());
+            let mut seen_text = false;
+            blocks.retain(|block| {
+                if block.get("type").and_then(Value::as_str) != Some("text") {
+                    return true;
+                }
+                if seen_text {
+                    false
+                } else {
+                    seen_text = true;
+                    true
+                }
+            });
+            Ok(())
+        }
+        _ => Err("该 DeepSeek 消息的 content 格式不支持编辑".to_string()),
+    }
+}
+
+fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String, bool), String> {
+    let target = rows
+        .iter()
+        .enumerate()
+        .find_map(|(index, row)| (row_message_id(index, row).as_deref() == Some(message_id)).then_some(index))
+        .ok_or_else(|| "找不到要编辑的 DeepSeek 消息，可能会话已被其他进程修改".to_string())?;
+    let role = message_value(&rows[target])
+        .map(|(role, _)| role.to_string())
+        .ok_or_else(|| "只能编辑 DeepSeek 用户消息或助手消息".to_string())?;
+    let is_last = rows
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, row)| {
+            visible_text(row)
+                .filter(|(candidate_role, _)| *candidate_role == role.as_str())
+                .map(|_| index)
+        })
+        == Some(target);
+
+    let data = rows[target]
+        .get_mut("data")
+        .ok_or_else(|| "DeepSeek 消息缺少 data 字段".to_string())?;
+    let message = if role == "assistant" {
+        data.get_mut("message")
+            .ok_or_else(|| "DeepSeek 助手消息缺少 message 字段".to_string())?
+    } else {
+        data
+    };
+    let content = message
+        .get_mut("content")
+        .ok_or_else(|| "该 DeepSeek 消息没有 content 字段".to_string())?;
+    replace_content_text(content, text)?;
+    Ok((role, is_last))
+}
+
+fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool), String> {
+    let target = rows
+        .iter()
+        .enumerate()
+        .find_map(|(index, row)| (row_message_id(index, row).as_deref() == Some(message_id)).then_some(index))
+        .ok_or_else(|| "找不到要删除的 DeepSeek 消息，可能会话已被其他进程修改".to_string())?;
+    let role = message_value(&rows[target])
+        .map(|(role, _)| role.to_string())
+        .ok_or_else(|| "只能删除 DeepSeek 用户消息或助手消息".to_string())?;
+    let is_last = rows
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, row)| {
+            visible_text(row)
+                .filter(|(candidate_role, _)| *candidate_role == role.as_str())
+                .map(|_| index)
+        })
+        == Some(target);
+    rows.remove(target);
+    Ok((role, is_last))
+}
+
+fn encode_rows(rows: &[Value]) -> Result<Vec<u8>, String> {
+    let mut jsonl = String::new();
+    for row in rows {
+        jsonl.push_str(
+            &serde_json::to_string(row)
+                .map_err(|error| format!("序列化 DeepSeek 会话失败：{error}"))?,
+        );
+        jsonl.push('\n');
+    }
+    zstd::stream::encode_all(Cursor::new(jsonl.into_bytes()), 3)
+        .map_err(|error| format!("压缩 DeepSeek 会话失败：{error}"))
+}
+
+fn companion_paths(path: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![path.to_path_buf()];
+    if let Some(parent) = path.parent() {
+        for name in SESSION_FILES {
+            let candidate = parent.join(name);
+            if candidate.is_file() && !paths.contains(&candidate) {
+                paths.push(candidate);
+            }
+        }
+    }
+    paths
+}
+
+fn projection_cache_path(path: &Path) -> Option<PathBuf> {
+    let session_dir = path.parent()?;
+    let session_id = session_dir.file_name()?.to_str()?;
+    let sessions_dir = session_dir.parent()?.parent()?;
+    (sessions_dir.file_name()?.to_str()? == "sessions").then(|| {
+        sessions_dir
+            .parent()
+            .unwrap_or(sessions_dir)
+            .join("storages")
+            .join("session_projcache")
+            .join("sessions")
+            .join(format!("{session_id}.json"))
+    })
+}
+
+fn compact_projection_text(text: &str) -> String {
+    let trimmed = text.trim();
+    let mut compact: String = trimmed.chars().take(200).collect();
+    if trimmed.chars().count() > 200 {
+        compact.push('…');
+    }
+    compact
+}
+
+fn projection_write(path: &Path, role: &str, text: &str) -> Result<Option<PreparedWrite>, String> {
+    let Some(cache_path) = projection_cache_path(path) else {
+        return Ok(None);
+    };
+    if !cache_path.is_file() {
+        return Ok(None);
+    }
+    let mut cache: Value = serde_json::from_slice(
+        &fs::read(&cache_path)
+            .map_err(|error| format!("读取 DeepSeek 会话配置失败：{error}"))?,
+    )
+    .map_err(|error| format!("解析 DeepSeek 会话配置失败：{error}"))?;
+    let turns = cache
+        .pointer_mut("/record/rows/turnOutline/val/turns")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "DeepSeek 会话配置缺少 turnOutline.turns".to_string())?;
+    let last_turn = turns
+        .last_mut()
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "DeepSeek 会话配置没有可同步的最后一轮".to_string())?;
+    let field = if role == "user" { "prompt" } else { "response" };
+    last_turn.insert(field.to_string(), Value::String(compact_projection_text(text)));
+    let bytes = serde_json::to_vec_pretty(&cache)
+        .map_err(|error| format!("序列化 DeepSeek 会话配置失败：{error}"))?;
+    Ok(Some(PreparedWrite { path: cache_path, bytes }))
+}
+
+fn sibling_path(path: &Path, suffix: &str) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "DeepSeek 会话文件名无效".to_string())?;
+    Ok(path.with_file_name(format!("{name}.{suffix}")))
+}
+
+fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
+    let mut staged = Vec::with_capacity(writes.len());
+    for write in &writes {
+        let temp = sibling_path(&write.path, "asv-write.tmp")?;
+        let _ = fs::remove_file(&temp);
+        if let Err(error) = fs::write(&temp, &write.bytes) {
+            for (temp, _) in &staged {
+                let _ = fs::remove_file(temp);
+            }
+            return Err(format!("写入 DeepSeek 临时文件失败：{error}"));
+        }
+        staged.push((temp, sibling_path(&write.path, "asv-write.bak")?));
+    }
+
+    let mut committed = Vec::new();
+    for (index, write) in writes.iter().enumerate() {
+        let (temp, backup) = &staged[index];
+        let _ = fs::remove_file(backup);
+        if let Err(error) = fs::rename(&write.path, backup) {
+            for (temp, _) in &staged[index..] {
+                let _ = fs::remove_file(temp);
+            }
+            for (path, backup) in committed.iter().rev() {
+                let _ = fs::remove_file(path);
+                let _ = fs::rename(backup, path);
+            }
+            return Err(format!("备份 DeepSeek 原文件失败：{error}"));
+        }
+        if let Err(error) = fs::rename(temp, &write.path) {
+            let _ = fs::rename(backup, &write.path);
+            let _ = fs::remove_file(temp);
+            for (temp, _) in &staged[index + 1..] {
+                let _ = fs::remove_file(temp);
+            }
+            for (path, backup) in committed.iter().rev() {
+                let _ = fs::remove_file(path);
+                let _ = fs::rename(backup, path);
+            }
+            return Err(format!("保存 DeepSeek 修改失败：{error}"));
+        }
+        committed.push((write.path.clone(), backup.clone()));
+    }
+    for (_, backup) in committed {
+        let _ = fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("DeepSeek 消息内容不能为空".to_string());
+    }
+    let paths = companion_paths(path);
+    let mut writes = Vec::with_capacity(paths.len() + 1);
+    let mut primary_rows = None;
+    let mut primary_role = None;
+    let mut primary_is_last = false;
+    for candidate in paths {
+        let mut rows = decode_rows(&candidate)?;
+        let contains_message = rows
+            .iter()
+            .enumerate()
+            .any(|(index, row)| row_message_id(index, row).as_deref() == Some(message_id));
+        if candidate.as_path() != path && !contains_message {
+            continue;
+        }
+        let (role, is_last) = edit_rows(&mut rows, message_id, text)?;
+        if candidate.as_path() == path {
+            primary_role = Some(role);
+            primary_is_last = is_last;
+            primary_rows = Some(rows.clone());
+        }
+        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)? });
+    }
+    if primary_is_last {
+        let role = primary_role.as_deref().unwrap_or("assistant");
+        let tail_text = primary_rows
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .rev()
+            .find_map(|row| visible_text(row).filter(|(candidate, _)| *candidate == role))
+            .map(|(_, text)| text)
+            .unwrap_or_default();
+        if let Some(cache_write) = projection_write(path, role, &tail_text)? {
+            writes.push(cache_write);
+        }
+    }
+    commit_writes(writes)
+}
+
+pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
+    let paths = companion_paths(path);
+    let mut writes = Vec::with_capacity(paths.len() + 1);
+    let mut primary_rows = None;
+    let mut primary_role = None;
+    let mut primary_was_last = false;
+    for candidate in paths {
+        let mut rows = decode_rows(&candidate)?;
+        let contains_message = rows
+            .iter()
+            .enumerate()
+            .any(|(index, row)| row_message_id(index, row).as_deref() == Some(message_id));
+        if candidate.as_path() != path && !contains_message {
+            continue;
+        }
+        let (role, was_last) = delete_rows(&mut rows, message_id)?;
+        if candidate.as_path() == path {
+            primary_role = Some(role);
+            primary_was_last = was_last;
+            primary_rows = Some(rows.clone());
+        }
+        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)? });
+    }
+    if primary_was_last {
+        let role = primary_role.as_deref().unwrap_or("assistant");
+        let tail_text = primary_rows
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .rev()
+            .find_map(|row| visible_text(row).filter(|(candidate, _)| *candidate == role))
+            .map(|(_, text)| text)
+            .unwrap_or_default();
+        if let Some(cache_write) = projection_write(path, role, &tail_text)? {
+            writes.push(cache_write);
+        }
+    }
+    commit_writes(writes)
+}
+
 pub fn parse_session_messages(
     path: &Path,
     page: usize,
@@ -358,7 +712,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("dsh-provider-{}", uuid::Uuid::new_v4()));
         let session_dir = root.join("workspace").join("session-1");
         fs::create_dir_all(&session_dir).unwrap();
-        let path = session_dir.join(SESSION_FILE);
+        let path = session_dir.join(SESSION_FILES[1]);
         let file = fs::File::create(&path).unwrap();
         let mut encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
         writeln!(encoder, r#"{{"type":"session","version":3,"id":"session-1","createdAt":1000,"cwd":"C:\\\\work"}}"#).unwrap();
@@ -376,6 +730,77 @@ mod tests {
         let messages = parse_all_messages(&path).unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].content.len(), 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_compressed(path: &Path, rows: &[Value]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, encode_rows(rows).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn edits_and_deletes_both_versions_and_syncs_last_turn_projection() {
+        let root = std::env::temp_dir().join(format!("dsh-edit-provider-{}", uuid::Uuid::new_v4()));
+        let session_dir = root.join("sessions").join("workspace").join("session-1");
+        let v4 = session_dir.join(SESSION_FILES[0]);
+        let v3 = session_dir.join(SESSION_FILES[1]);
+        let rows = vec![
+            serde_json::json!({"type":"session","version":4,"id":"session-1","seq":0,"createdAt":1000,"cwd":"C:\\work"}),
+            serde_json::json!({"type":"user/message","seq":1,"time":2000,"data":{"id":"u1","content":[{"type":"text","text":"question"}]}}),
+            serde_json::json!({"type":"assistant/message","seq":2,"time":3000,"data":{"turn":1,"message":{"id":"a1","content":[{"type":"text","text":"first answer"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
+            serde_json::json!({"type":"assistant/message","seq":3,"time":4000,"data":{"turn":1,"message":{"id":"a2","content":[{"type":"reasoning","text":"private"},{"type":"text","text":"old answer"}],"source":{"provider":"deepseek","model":"deepseek-chat"}}}}),
+        ];
+        write_compressed(&v4, &rows);
+        write_compressed(&v3, &rows);
+
+        let cache = root
+            .join("storages")
+            .join("session_projcache")
+            .join("sessions")
+            .join("session-1.json");
+        fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        fs::write(
+            &cache,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1,
+                "record": {"rows": {"turnOutline": {"val": {"turns": [
+                    {"turn": 1, "prompt": "question", "response": "old answer"}
+                ]}}}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        edit_message(&v4, "a2", "updated answer").unwrap();
+        for path in [&v4, &v3] {
+            let messages = parse_all_messages(path).unwrap();
+            assert_eq!(messages.len(), 3);
+            assert!(messages[2].content.iter().any(|block| {
+                matches!(block, DisplayContentBlock::Text { text } if text == "updated answer")
+            }));
+            assert!(messages[2].content.iter().any(|block| {
+                matches!(block, DisplayContentBlock::Reasoning { text } if text == "private")
+            }));
+        }
+        let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        assert_eq!(
+            projection.pointer("/record/rows/turnOutline/val/turns/0/response").and_then(Value::as_str),
+            Some("updated answer")
+        );
+
+        delete_message(&v4, "a2").unwrap();
+        for path in [&v4, &v3] {
+            let messages = parse_all_messages(path).unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[1].uuid.as_deref(), Some("a1"));
+        }
+        let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        assert_eq!(
+            projection.pointer("/record/rows/turnOutline/val/turns/0/response").and_then(Value::as_str),
+            Some("first answer")
+        );
+        assert_eq!(session_files(&root.join("sessions").join("workspace")), vec![v4]);
 
         let _ = fs::remove_dir_all(root);
     }

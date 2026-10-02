@@ -174,10 +174,13 @@ fn validate_dsh_layout(path: &Path, base: &Path) -> Result<(), String> {
         || components
             .iter()
             .any(|component| !matches!(component, Component::Normal(_)))
-        || path.file_name().and_then(|name| name.to_str()) != Some("session.v3.jsonl.zstd")
+        || !matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("session.v3.jsonl.zstd" | "session.v4.jsonl.zstd")
+        )
     {
         return Err(
-            "DeepSeek Harness session file must be sessions/<workspace>/<session-id>/session.v3.jsonl.zstd"
+            "DeepSeek Harness session file must be sessions/<workspace>/<session-id>/session.v3.jsonl.zstd or session.v4.jsonl.zstd"
                 .to_string(),
         );
     }
