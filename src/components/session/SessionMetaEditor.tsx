@@ -1,8 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import { X } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
+import { api } from "../../services/api";
 
 interface Props {
+  source: string;
+  projectPath?: string;
   sessionId: string;
   currentAlias: string | null;
   currentTags: string[] | null;
@@ -10,6 +13,8 @@ interface Props {
 }
 
 export function SessionMetaEditor({
+  source,
+  projectPath,
   sessionId,
   currentAlias,
   currentTags,
@@ -19,14 +24,17 @@ export function SessionMetaEditor({
   const [tags, setTags] = useState<string[]>(currentTags || []);
   const [tagInput, setTagInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(-1);
+  const aliasInputRef = useRef<HTMLInputElement>(null);
   const tagInputRef = useRef<HTMLInputElement>(null);
-  const { updateSessionMeta, allTags } = useAppStore();
+  const { updateSessionMeta, refreshInBackground, allTags } = useAppStore();
 
   useEffect(() => {
-    tagInputRef.current?.focus();
-  }, []);
+    if (source === "grok") aliasInputRef.current?.focus();
+    else tagInputRef.current?.focus();
+  }, [source]);
 
   // Update suggestions when input changes
   useEffect(() => {
@@ -90,16 +98,19 @@ export function SessionMetaEditor({
   };
 
   const handleSave = async () => {
+    setSaveError(null);
     setSaving(true);
     try {
-      await updateSessionMeta(
-        sessionId,
-        alias.trim() || null,
-        tags
-      );
+      if (source === "grok") {
+        await api.renameChatSession(source, projectPath || "", sessionId, alias.trim() || null);
+        await refreshInBackground(true);
+      } else {
+        await updateSessionMeta(sessionId, alias.trim() || null, tags);
+      }
       onClose();
     } catch (err) {
       console.error("Failed to save metadata:", err);
+      setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
@@ -114,7 +125,7 @@ export function SessionMetaEditor({
     >
       <div className="bg-card border border-border rounded-lg p-6 max-w-md w-full mx-4 shadow-lg">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">编辑会话信息</h3>
+          <h3 className="text-lg font-semibold">{source === "grok" ? "重命名会话" : "编辑会话信息"}</h3>
           <button
             onClick={onClose}
             className="p-1 rounded hover:bg-accent transition-colors"
@@ -125,18 +136,26 @@ export function SessionMetaEditor({
 
         {/* Alias input */}
         <div className="mb-4">
-          <label className="block text-sm font-medium mb-1.5">别名</label>
+          <label className="block text-sm font-medium mb-1.5">{source === "grok" ? "会话名称" : "别名"}</label>
           <input
+            ref={aliasInputRef}
             type="text"
             value={alias}
             onChange={(e) => setAlias(e.target.value)}
-            placeholder="为会话设置一个自定义名称..."
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (!saving) void handleSave();
+              }
+            }}
+            placeholder={source === "grok" ? "输入新名称；留空则清除自定义名称" : "为会话设置一个自定义名称..."}
             className="w-full px-3 py-2 bg-background border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-ring placeholder:text-muted-foreground"
           />
         </div>
+        {source === "grok" && <p className="mb-4 text-xs text-muted-foreground">若 Grok CLI 正在使用此会话，请先关闭再重命名，避免同时写入名称记录。</p>}
 
-        {/* Tags input */}
-        <div className="mb-6">
+        {/* Grok stores session names in its native client-state metadata. */}
+        {source !== "grok" && <div className="mb-6">
           <label className="block text-sm font-medium mb-1.5">标签</label>
           <div className="flex flex-wrap gap-1.5 p-2 bg-background border border-border rounded-md min-h-[38px] focus-within:ring-2 focus-within:ring-ring">
             {tags.map((tag, i) => (
@@ -179,7 +198,9 @@ export function SessionMetaEditor({
               ))}
             </div>
           )}
-        </div>
+        </div>}
+
+        {saveError && <p className="mb-4 text-sm text-destructive" role="alert">{saveError}</p>}
 
         {/* Actions */}
         <div className="flex justify-end gap-2">

@@ -220,6 +220,7 @@ export function SessionsPage() {
 
   const editSession = editingSession
     ? sessions.find((s) => s.sessionId === editingSession)
+      || invalidSessions.find((s) => s.sessionId === editingSession)
     : null;
 
   const selectedSessions = filteredSessions.filter((s) => selected.has(s.filePath));
@@ -656,9 +657,9 @@ export function SessionsPage() {
                       setEditingSession(session.sessionId);
                     }}
                     className="p-1.5 text-xs text-muted-foreground rounded-md hover:bg-accent hover:text-foreground transition-colors"
-                    title="编辑标签和别名"
+                    title={source === "grok" ? "重命名会话" : "编辑标签和别名"}
                   >
-                    <Tag className="w-3.5 h-3.5" />编辑标签和别名
+                    <Tag className="w-3.5 h-3.5" />{source === "grok" ? "重命名会话" : "编辑标签和别名"}
                   </button>
                   {source === "codex" && (
                     <button
@@ -784,6 +785,8 @@ export function SessionsPage() {
       {/* Meta editor modal */}
       {editingSession && editSession && (
         <SessionMetaEditor
+          source={source}
+          projectPath={editSession.projectPath || editSession.cwd || project?.displayPath || projectId}
           sessionId={editingSession}
           currentAlias={editSession.alias}
           currentTags={editSession.tags}
@@ -812,12 +815,13 @@ export function SessionsPage() {
             </p>
             <div className="space-y-1 max-h-60 overflow-y-auto mb-4">
               {emptySessions.map((s) => (
-                <label
+                <div
                   key={s.filePath}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-accent cursor-pointer"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-accent"
                 >
                   <input
                     type="checkbox"
+                    aria-label={`选择会话 ${s.threadName || s.sessionId}`}
                     checked={cleanSelected.has(s.filePath)}
                     onChange={(e) => {
                       const next = new Set(cleanSelected);
@@ -828,14 +832,26 @@ export function SessionsPage() {
                     className="rounded"
                   />
                   <span className="text-xs text-muted-foreground font-mono truncate flex-1">
-                    {s.sessionId.slice(0, 8)}...
+                    {source === "grok" && s.threadName ? s.threadName : `${s.sessionId.slice(0, 8)}...`}
                   </span>
+                  {source === "grok" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCleanDialog(false);
+                        setEditingSession(s.sessionId);
+                      }}
+                      className="text-xs text-primary hover:underline shrink-0"
+                    >
+                      重命名
+                    </button>
+                  )}
                   {s.modified && (
                     <span className="text-xs text-muted-foreground/60 shrink-0">
                       {formatDateOnly(s.modified, timeZone)}
                     </span>
                   )}
-                </label>
+                </div>
               ))}
             </div>
             <div className="flex justify-between items-center">

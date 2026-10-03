@@ -1204,7 +1204,7 @@ export function MessagesPage() {
           <ActionMenu label="详情">
             <p>会话信息</p>
             {supportsCli && filePath && <div className="px-3 py-2"><SessionCostBadge filePath={filePath} /></div>}
-            {resolvedSessionId && <button onClick={() => setEditingSession(true)}><Tag className="h-4 w-4" />编辑标签和别名</button>}
+            {resolvedSessionId && <button onClick={() => setEditingSession(true)}><Tag className="h-4 w-4" />{source === "grok" ? "重命名会话" : "编辑标签和别名"}</button>}
             {source === "grok" && filePath && __IS_TAURI__ && <button onClick={handleOpenSessionFolder}><FolderOpen className="h-4 w-4" />打开会话目录</button>}
             {supportsResume && <button onClick={handleCopyCommand}><Copy className="h-4 w-4" />{copied ? "已复制" : "复制续聊命令"}</button>}
             {supportsResume && USE_TAURI_TRANSPORT && <button onClick={handleResume}><Play className="h-4 w-4" />在终端打开</button>}
@@ -1585,6 +1585,8 @@ export function MessagesPage() {
 
       {editingSession && resolvedSessionId && (
         <SessionMetaEditor
+          source={source}
+          projectPath={chatProjectPath || projectId}
           sessionId={resolvedSessionId}
           currentAlias={session?.alias || searchHit?.alias || null}
           currentTags={session?.tags || searchHit?.tags || null}

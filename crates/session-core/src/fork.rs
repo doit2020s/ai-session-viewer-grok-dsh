@@ -538,13 +538,52 @@ fn fork_files(
                 &fs::read(parent.join("summary.json")).map_err(|e| e.to_string())?,
             )
             .map_err(|e| format!("Grok 会话摘要损坏：{e}"))?;
-            if summary
+            let original_id = summary
                 .pointer("/info/id")
                 .and_then(Value::as_str)
-                .is_none()
-            {
-                return Err("Grok 会话摘要缺少有效的 info.id".to_string());
-            }
+                .filter(|id| !id.trim().is_empty())
+                .ok_or("Grok 会话摘要缺少有效的 info.id")?
+                .to_string();
+            let original_title = grok::native_display_name_for_path(path)
+                .or_else(|| {
+                    summary
+                        .get("session_summary")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|title| !title.is_empty())
+                        .map(str::to_owned)
+                })
+                .or_else(|| {
+                    rows.iter().find_map(|row| {
+                        let row = &row.value;
+                        if string(row, "type") != Some("user")
+                            || row.get("synthetic_reason").is_some_and(|value| !value.is_null())
+                        {
+                            return None;
+                        }
+                        let content = row.get("content")?;
+                        let text = if let Some(text) = content.as_str() {
+                            text.to_string()
+                        } else {
+                            content
+                                .as_array()?
+                                .iter()
+                                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        };
+                        let text = text.trim();
+                        (!text.is_empty()).then(|| text.chars().take(200).collect())
+                    })
+                })
+                .unwrap_or(original_id);
+            // The native name registry rejects control characters and names
+            // above 512 characters. Generated summaries can exceed that limit.
+            let fork_title: String = format!("(fork){original_title}")
+                .chars()
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .take(512)
+                .collect();
             let project = summary
                 .pointer("/info/cwd")
                 .and_then(Value::as_str)
@@ -583,6 +622,10 @@ fn fork_files(
                 write_new(
                     &destination.join("summary.json"),
                     summary.to_string().as_bytes(),
+                )?;
+                grok::set_custom_name_for_path(
+                    &destination.join("chat_history.jsonl"),
+                    Some(&fork_title),
                 )
             })();
             if let Err(error) = result {

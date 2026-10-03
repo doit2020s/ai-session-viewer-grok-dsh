@@ -111,8 +111,8 @@ fn omp_fork_selects_ancestry_and_keeps_profile_directory_and_artifacts() {
 #[test]
 fn grok_fork_keeps_raw_tools_context_and_rewrites_summary() {
     let fixture = Fixture::new();
-    let original = fixture.0.join("old");
-    fs::create_dir(&original).unwrap();
+    let original = fixture.0.join("sessions").join("project").join("old");
+    fs::create_dir_all(&original).unwrap();
     let path = original.join("chat_history.jsonl");
     let rows = vec![
         json!({"type":"system","content":"system context"}),
@@ -127,6 +127,18 @@ fn grok_fork_keeps_raw_tools_context_and_rewrites_summary() {
     fs::write(&path, jsonl(&rows)).unwrap();
     let summary = json!({"info":{"id":"old","cwd":"/project"},"session_summary":"future summary","request_id":"old-request","next_trace_turn":100,"chat_format_version":1,"customField":true});
     fs::write(original.join("summary.json"), summary.to_string()).unwrap();
+    let client_state_dir = fixture.0.join("client-state");
+    fs::create_dir(&client_state_dir).unwrap();
+    let client_state_path = client_state_dir.join("session-meta.json");
+    fs::write(
+        &client_state_path,
+        json!({
+            "old": {"provider":"grok","customName":"已重命名原会话","pinned":true},
+            "other": {"provider":"grok","customName":"其他会话"}
+        })
+        .to_string(),
+    )
+    .unwrap();
     fs::write(original.join("prompt_context.json"), "{\"version\":1}").unwrap();
     fs::write(original.join("system_prompt.txt"), "system prompt").unwrap();
     let parsed = read_records(&path).unwrap();
@@ -147,6 +159,18 @@ fn grok_fork_keeps_raw_tools_context_and_rewrites_summary() {
     assert_eq!(new_summary["session_summary"], "");
     assert_ne!(new_summary["request_id"], "old-request");
     assert_eq!(new_summary["customField"], true);
+    let client_state: Value = serde_json::from_slice(&fs::read(&client_state_path).unwrap()).unwrap();
+    assert_eq!(
+        client_state[&fork.new_session_id]["customName"],
+        "(fork)已重命名原会话"
+    );
+    assert_eq!(client_state["old"]["customName"], "已重命名原会话");
+    assert_eq!(client_state["old"]["pinned"], true);
+    assert_eq!(client_state["other"]["customName"], "其他会话");
+    assert_eq!(
+        grok::custom_name_for_path(new_path).as_deref(),
+        Some("(fork)已重命名原会话")
+    );
     assert_eq!(
         grok::extract_session_meta(new_path).unwrap().id,
         fork.new_session_id
@@ -162,9 +186,101 @@ fn grok_fork_keeps_raw_tools_context_and_rewrites_summary() {
     // A non-file context cannot leave a half-created, discoverable session.
     fs::remove_file(original.join("prompt_context.json")).unwrap();
     fs::create_dir(original.join("prompt_context.json")).unwrap();
-    let count = fs::read_dir(&fixture.0).unwrap().count();
+    let count = fs::read_dir(original.parent().unwrap()).unwrap().count();
     assert!(fork_files(SessionSourceKind::Grok, &path, &parsed, index).is_err());
-    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), count);
+    assert_eq!(fs::read_dir(original.parent().unwrap()).unwrap().count(), count);
+}
+
+#[test]
+fn grok_fork_uses_generated_title_then_first_prompt_when_unnamed() {
+    let fixture = Fixture::new();
+    let original = fixture.0.join("sessions").join("project").join("old");
+    fs::create_dir_all(&original).unwrap();
+    let path = original.join("chat_history.jsonl");
+    let rows = vec![
+        json!({"type":"user","content":"Original first prompt"}),
+        json!({"type":"assistant","content":"answer"}),
+    ];
+    fs::write(&path, jsonl(&rows)).unwrap();
+    let summary_path = original.join("summary.json");
+    fs::write(
+        &summary_path,
+        json!({"info":{"id":"old","cwd":"/project"},"session_summary":"Generated title"})
+            .to_string(),
+    )
+    .unwrap();
+    let parsed = read_records(&path).unwrap();
+    let client_state_dir = fixture.0.join("client-state");
+    fs::create_dir(&client_state_dir).unwrap();
+    let native_names = client_state_dir.join("session-meta.json");
+    fs::write(
+        &native_names,
+        json!({"old":{"provider":"grok","autoName":"CLI auto title"}}).to_string(),
+    )
+    .unwrap();
+    let fork = fork_files(SessionSourceKind::Grok, &path, &parsed, 0).unwrap();
+    assert_eq!(
+        grok::custom_name_for_path(Path::new(&fork.new_file_path)).as_deref(),
+        Some("(fork)CLI auto title")
+    );
+    fs::remove_file(native_names).unwrap();
+    let fork = fork_files(SessionSourceKind::Grok, &path, &parsed, 0).unwrap();
+    assert_eq!(
+        grok::custom_name_for_path(Path::new(&fork.new_file_path)).as_deref(),
+        Some("(fork)Generated title")
+    );
+
+    let long_title = format!("Line one\n{}", "x".repeat(600));
+    fs::write(
+        &summary_path,
+        json!({"info":{"id":"old","cwd":"/project"},"session_summary":long_title})
+            .to_string(),
+    )
+    .unwrap();
+    let fork = fork_files(SessionSourceKind::Grok, &path, &parsed, 0).unwrap();
+    let title = grok::custom_name_for_path(Path::new(&fork.new_file_path)).unwrap();
+    assert!(title.starts_with("(fork)Line one "));
+    assert_eq!(title.chars().count(), 512);
+
+    fs::write(
+        &summary_path,
+        json!({"info":{"id":"old","cwd":"/project"},"session_summary":""}).to_string(),
+    )
+    .unwrap();
+    let fork = fork_files(SessionSourceKind::Grok, &path, &parsed, 0).unwrap();
+    assert_eq!(
+        grok::custom_name_for_path(Path::new(&fork.new_file_path)).as_deref(),
+        Some("(fork)Original first prompt")
+    );
+}
+
+#[test]
+fn grok_fork_rolls_back_child_if_native_name_cannot_be_saved() {
+    let fixture = Fixture::new();
+    let project = fixture.0.join("sessions").join("project");
+    let original = project.join("old");
+    fs::create_dir_all(&original).unwrap();
+    let path = original.join("chat_history.jsonl");
+    let rows = vec![json!({"type":"user","content":"Question"})];
+    fs::write(&path, jsonl(&rows)).unwrap();
+    fs::write(
+        original.join("summary.json"),
+        json!({"info":{"id":"old","cwd":"/project"},"session_summary":"Original"})
+            .to_string(),
+    )
+    .unwrap();
+    let client_state_dir = fixture.0.join("client-state");
+    fs::create_dir(&client_state_dir).unwrap();
+    fs::write(client_state_dir.join("session-meta.json"), "not JSON").unwrap();
+
+    let parsed = read_records(&path).unwrap();
+    assert!(fork_files(SessionSourceKind::Grok, &path, &parsed, 0).is_err());
+    assert_eq!(fs::read_dir(&project).unwrap().count(), 1);
+    assert_eq!(fs::read(&path).unwrap(), jsonl(&rows));
+    assert_eq!(
+        fs::read_to_string(client_state_dir.join("session-meta.json")).unwrap(),
+        "not JSON"
+    );
 }
 
 #[test]

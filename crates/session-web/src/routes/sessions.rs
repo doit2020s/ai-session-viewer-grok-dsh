@@ -34,7 +34,9 @@ fn merge_session_metadata(source: &str, project_id: &str, sessions: &mut [Sessio
                     session.tags = Some(sm.tags.clone());
                 }
             } else {
-                session.alias = sm.alias.clone();
+                if source != "grok" {
+                    session.alias = sm.alias.clone();
+                }
                 if !sm.tags.is_empty() {
                     session.tags = Some(sm.tags.clone());
                 }
@@ -446,6 +448,11 @@ pub async fn update_session_meta(
                 None,
                 body.tags,
             )
+        } else if body.source == "grok" {
+            if !body.tags.is_empty() {
+                return Err("Grok 会话暂不支持标签".to_string());
+            }
+            grok::set_custom_name(&body.session_id, body.alias.as_deref())
         } else {
             metadata::update_session_meta(
                 &body.source,
@@ -478,13 +485,17 @@ pub async fn rename_chat_session(
     SessionSource::parse(&body.source).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     tokio::task::spawn_blocking(move || {
-        metadata::rename_chat_session(
-            &body.source,
-            &body.project_path,
-            &body.session_id,
-            body.alias.as_deref(),
-        )
-        .map(|_| ())
+        if body.source == "grok" {
+            grok::set_custom_name(&body.session_id, body.alias.as_deref())
+        } else {
+            metadata::rename_chat_session(
+                &body.source,
+                &body.project_path,
+                &body.session_id,
+                body.alias.as_deref(),
+            )
+            .map(|_| ())
+        }
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

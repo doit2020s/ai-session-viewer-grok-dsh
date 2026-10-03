@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -16,8 +16,9 @@ use crate::state::file_modified_key;
 
 const CHAT_HISTORY_FILE: &str = "chat_history.jsonl";
 const UNROOTED_PROJECT: &str = "<grok-unrooted>";
-// v2 includes Grok's client-state customName values in the displayed title.
-const DISK_CACHE_VERSION: u32 = 2;
+// v3 caches only summary titles. Grok's client-state names are overlaid at
+// read time so a rename or a cleared name never leaves a stale disk title.
+const DISK_CACHE_VERSION: u32 = 3;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -90,23 +91,239 @@ pub fn get_sessions_dir() -> Option<PathBuf> {
         .map(|home| home.join("sessions"))
 }
 
-/// Grok's UI renames (including fork names) live outside the session folder.
-/// They are stored in ~/.grok/client-state/session-meta.json and are not
-/// copied into summary.json. Read the value by session id so forked sessions
-/// do not inherit the parent's generated title in viewers.
-fn custom_name_for(session_id: &str) -> Option<String> {
-    let sessions = get_sessions_dir()?;
-    let path = sessions.parent()?.join("client-state").join("session-meta.json");
-    let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    let meta = value.get(session_id)?;
-    if meta.get("provider").and_then(Value::as_str) != Some("grok") {
-        return None;
+fn native_meta_path(grok_home: &Path) -> PathBuf {
+    grok_home.join("client-state").join("session-meta.json")
+}
+
+#[derive(Clone, Default)]
+struct NativeSessionNames {
+    custom: Option<String>,
+    auto: Option<String>,
+}
+
+fn native_session_names(grok_home: &Path) -> HashMap<String, NativeSessionNames> {
+    let Ok(bytes) = fs::read(native_meta_path(grok_home)) else {
+        return HashMap::new();
+    };
+    let Ok(Value::Object(sessions)) = serde_json::from_slice::<Value>(&bytes) else {
+        return HashMap::new();
+    };
+    sessions
+        .into_iter()
+        .filter_map(|(id, meta)| {
+            if meta.get("provider").and_then(Value::as_str) != Some("grok") {
+                return None;
+            }
+            let name = |key| {
+                meta.get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(ToString::to_string)
+            };
+            let names = NativeSessionNames {
+                custom: name("customName"),
+                auto: name("autoName"),
+            };
+            (names.custom.is_some() || names.auto.is_some()).then_some((id, names))
+        })
+        .collect()
+}
+
+fn grok_home_for_history(chat_history_path: &Path) -> Result<(PathBuf, String, Option<String>), String> {
+    let path = chat_history_path
+        .canonicalize()
+        .map_err(|error| format!("Grok 会话文件不存在：{error}"))?;
+    if !path.is_file() || path.file_name().and_then(|name| name.to_str()) != Some(CHAT_HISTORY_FILE) {
+        return Err("Grok 会话文件必须是 chat_history.jsonl".to_string());
     }
-    meta.get("customName")
+    let session_dir = path.parent().ok_or("Grok 会话目录不存在")?;
+    let project_dir = session_dir.parent().ok_or("Grok 项目目录不存在")?;
+    let sessions_dir = project_dir.parent().ok_or("Grok sessions 目录不存在")?;
+    // Prefer the configured home even if its sessions directory is a junction
+    // to another path whose parent also happens to be called `sessions`.
+    let configured_home = get_sessions_dir().and_then(|configured| {
+        (configured.canonicalize().ok().as_deref() == Some(sessions_dir))
+            .then(|| configured.parent().map(Path::to_path_buf))
+            .flatten()
+    });
+    let home = if let Some(home) = configured_home {
+        home
+    } else if sessions_dir.file_name().and_then(|name| name.to_str()) == Some("sessions") {
+        // Isolated fixture or another Grok home passed by the internal fork
+        // function; public routes always resolve a configured session first.
+        sessions_dir.parent().ok_or("Grok 主目录不存在")?.to_path_buf()
+    } else {
+        return Err("Grok 会话路径不是 sessions/<project>/<session-id>/chat_history.jsonl".to_string());
+    };
+    let summary: Value = serde_json::from_slice(
+        &fs::read(session_dir.join("summary.json"))
+            .map_err(|error| format!("读取 Grok 会话摘要失败：{error}"))?,
+    )
+    .map_err(|error| format!("解析 Grok 会话摘要失败：{error}"))?;
+    let id = summary
+        .pointer("/info/id")
+        .and_then(Value::as_str)
+        .ok_or("Grok 会话摘要缺少 info.id")?;
+    crate::metadata::validate_session_id(id)?;
+    if session_dir.file_name().and_then(|name| name.to_str()) != Some(id) {
+        return Err("Grok 会话摘要 ID 与目录名称不一致".to_string());
+    }
+    let cwd = summary
+        .pointer("/info/cwd")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    Ok((home, id.to_string(), cwd))
+}
+
+/// Grok's own UI stores names in `client-state/session-meta.json`, not in
+/// `summary.json`. Resolve the name against the session's Grok home so forks
+/// and tests can use isolated homes without changing `GROK_HOME` globally.
+pub fn custom_name_for_path(chat_history_path: &Path) -> Option<String> {
+    let (home, id, _) = grok_home_for_history(chat_history_path).ok()?;
+    native_session_names(&home).remove(&id)?.custom
+}
+
+/// Preferred native title for a Grok session: explicit rename, then the
+/// CLI's automatically generated name. This is also the fork title source.
+pub fn native_display_name_for_path(chat_history_path: &Path) -> Option<String> {
+    let (home, id, _) = grok_home_for_history(chat_history_path).ok()?;
+    let names = native_session_names(&home).remove(&id)?;
+    names.custom.or(names.auto)
+}
+
+fn rename_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Store a session name in Grok's native client-state registry. The caller
+/// supplies an existing history path; its summary ID must match its directory.
+/// Existing metadata (usage, activeAt, etc.) is preserved verbatim as JSON.
+pub fn set_custom_name_for_path(chat_history_path: &Path, name: Option<&str>) -> Result<(), String> {
+    let (home, id, cwd) = grok_home_for_history(chat_history_path)?;
+    let name = name.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(name) = name {
+        if name.chars().count() > 512 || name.chars().any(char::is_control) {
+            return Err("Grok 会话名不能超过 512 字或包含控制字符".to_string());
+        }
+    }
+
+    let _guard = rename_lock().lock();
+    let path = native_meta_path(&home);
+    let before = match fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("读取 Grok 会话元数据失败：{error}")),
+    };
+    let mut registry = match before.as_deref() {
+        Some(bytes) => serde_json::from_slice::<Value>(bytes)
+            .map_err(|error| format!("Grok 会话元数据损坏，未覆盖原文件：{error}"))?,
+        None => Value::Object(serde_json::Map::new()),
+    };
+    let sessions = registry
+        .as_object_mut()
+        .ok_or("Grok 会话元数据不是 JSON 对象，未覆盖原文件")?;
+    if !sessions.contains_key(&id) && name.is_none() {
+        return Ok(());
+    }
+    let entry = sessions.entry(id).or_insert_with(|| {
+        let mut meta = serde_json::Map::new();
+        meta.insert("provider".to_string(), Value::String("grok".to_string()));
+        if let Some(cwd) = cwd {
+            meta.insert("providerCwd".to_string(), Value::String(cwd));
+        }
+        Value::Object(meta)
+    });
+    let meta = entry
+        .as_object_mut()
+        .ok_or("Grok 会话元数据条目不是 JSON 对象，未覆盖原文件")?;
+    if meta.get("provider").and_then(Value::as_str) != Some("grok") {
+        return Err("同 ID 元数据属于其他提供商，未覆盖原文件".to_string());
+    }
+    let previous = meta
+        .get("customName")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToString::to_string)
+        .filter(|value| !value.is_empty());
+    if previous == name {
+        return Ok(());
+    }
+    if let Some(name) = name {
+        meta.insert("customName".to_string(), Value::String(name.to_string()));
+    } else {
+        meta.remove("customName");
+    }
+    let rendered = serde_json::to_vec_pretty(&registry)
+        .map_err(|error| format!("序列化 Grok 会话元数据失败：{error}"))?;
+    if before.as_deref() == Some(rendered.as_slice()) {
+        return Ok(());
+    }
+    let parent = path.parent().ok_or("Grok client-state 目录不存在")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("创建 Grok client-state 目录失败：{error}"))?;
+    let temporary = parent.join(format!("session-meta.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("创建 Grok 会话元数据临时文件失败：{error}"))?;
+        file.write_all(&rendered)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| format!("写入 Grok 会话元数据临时文件失败：{error}"))?;
+        drop(file);
+        // Grok CLI may update this registry independently. Never knowingly
+        // replace bytes that differ from the snapshot we edited.
+        let current = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("重新读取 Grok 会话元数据失败：{error}")),
+        };
+        if current != before {
+            return Err("Grok CLI 同时修改了会话元数据，请刷新后重试".to_string());
+        }
+        if let Some(bytes) = before.as_deref() {
+            let backup = parent.join(format!("session-meta.{}.asv-backup.json", uuid::Uuid::new_v4()));
+            fs::write(&backup, bytes)
+                .map_err(|error| format!("备份 Grok 会话元数据失败：{error}"))?;
+        }
+        let latest = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("保存前读取 Grok 会话元数据失败：{error}")),
+        };
+        if latest != before {
+            return Err("Grok CLI 同时修改了会话元数据，请刷新后重试".to_string());
+        }
+        fs::rename(&temporary, &path)
+            .map_err(|error| format!("保存 Grok 会话元数据失败（原文件保留）：{error}"))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    } else {
+        invalidate_sessions_cache();
+    }
+    result
+}
+
+/// Resolve a Grok session by its summary ID across every project. The UI's
+/// project ID is not needed (it can be `<grok-unrooted>` for legacy sessions).
+pub fn set_custom_name(session_id: &str, name: Option<&str>) -> Result<(), String> {
+    crate::metadata::validate_session_id(session_id)?;
+    let matches = load_all_sessions()
+        .into_iter()
+        .filter(|session| session.session_id == session_id)
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(if matches.is_empty() {
+            "找不到 Grok 会话，请刷新列表后重试".to_string()
+        } else {
+            "存在重复 Grok 会话 ID，无法确定要重命名的会话".to_string()
+        });
+    }
+    set_custom_name_for_path(Path::new(&matches[0].file_path), name)
 }
 
 fn session_dirs() -> Vec<PathBuf> {
@@ -631,14 +848,12 @@ fn session_entry(dir: &Path) -> Option<SessionIndexEntry> {
         .and_then(Value::as_str)
         .filter(|title| !title.trim().is_empty())
         .map(ToString::to_string);
-    let display_title = custom_name_for(&session_id).or(generated_title);
-
     Some(SessionIndexEntry {
         source: "grok".to_string(),
         session_id,
         file_path: file_path.to_string_lossy().into_owned(),
         first_prompt,
-        thread_name: display_title,
+        thread_name: generated_title,
         message_count,
         created: summary
             .get("created_at")
@@ -728,10 +943,32 @@ fn reconcile_sessions_cache(cache: GrokDiskCache, dirs: Vec<PathBuf>) -> (GrokDi
 }
 
 fn sessions_from_cache(cache: &GrokDiskCache) -> Vec<SessionIndexEntry> {
+    let names = get_sessions_dir()
+        .and_then(|sessions| sessions.parent().map(native_session_names))
+        .unwrap_or_default();
+    sessions_from_cache_with_names(cache, &names)
+}
+
+fn sessions_from_cache_with_names(
+    cache: &GrokDiskCache,
+    names: &HashMap<String, NativeSessionNames>,
+) -> Vec<SessionIndexEntry> {
     cache
         .sessions_by_dir
         .values()
-        .map(|cached| cached.entry.clone())
+        .map(|cached| {
+            let mut entry = cached.entry.clone();
+            if let Some(native) = names.get(&entry.session_id) {
+                if let Some(name) = native.custom.as_ref() {
+                    entry.thread_name = Some(name.clone());
+                    // Only a user-assigned native name is editable as an alias.
+                    entry.alias = Some(name.clone());
+                } else if let Some(name) = native.auto.as_ref() {
+                    entry.thread_name = Some(name.clone());
+                }
+            }
+            entry
+        })
         .collect()
 }
 
@@ -1187,5 +1424,132 @@ mod tests {
         assert_eq!(scans, 0);
         assert_eq!(cache.sessions_by_dir.len(), 1);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_rename_preserves_other_metadata_and_can_clear_name() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "ai-session-viewer-grok-native-name-{}-{unique}",
+            std::process::id()
+        ));
+        let session_dir = home.join("sessions").join("project").join("session-1");
+        write_session(&session_dir, "session-1", "/project", Some("prompt"));
+        let history = session_dir.join(CHAT_HISTORY_FILE);
+        let native = native_meta_path(&home);
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        fs::write(
+            &native,
+            serde_json::json!({
+                "other-provider": { "provider": "claude", "customName": "keep" },
+                "session-1": {
+                    "provider": "grok", "customName": "before", "autoName": "automatic", "usage": {"tokens": 7},
+                    "providerCwd": "/project"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(custom_name_for_path(&history).as_deref(), Some("before"));
+        assert_eq!(native_display_name_for_path(&history).as_deref(), Some("before"));
+        set_custom_name_for_path(&history, Some(" 新名称 ")).unwrap();
+        let after: Value = serde_json::from_slice(&fs::read(&native).unwrap()).unwrap();
+        assert_eq!(after["session-1"]["customName"], "新名称");
+        assert_eq!(after["session-1"]["usage"]["tokens"], 7);
+        assert_eq!(after["other-provider"]["customName"], "keep");
+        assert_eq!(custom_name_for_path(&history).as_deref(), Some("新名称"));
+        let already_named = fs::read(&native).unwrap();
+        set_custom_name_for_path(&history, Some("新名称")).unwrap();
+        assert_eq!(fs::read(&native).unwrap(), already_named);
+
+        set_custom_name_for_path(&history, None).unwrap();
+        let cleared: Value = serde_json::from_slice(&fs::read(&native).unwrap()).unwrap();
+        assert!(cleared["session-1"].get("customName").is_none());
+        assert_eq!(cleared["session-1"]["usage"]["tokens"], 7);
+        assert_eq!(custom_name_for_path(&history), None);
+        assert_eq!(native_display_name_for_path(&history).as_deref(), Some("automatic"));
+        let already_cleared = fs::read(&native).unwrap();
+        set_custom_name_for_path(&history, None).unwrap();
+        assert_eq!(fs::read(&native).unwrap(), already_cleared);
+
+        let second_dir = home.join("sessions").join("project").join("session-2");
+        write_session(&second_dir, "session-2", "/project", Some("other prompt"));
+        let second_history = second_dir.join(CHAT_HISTORY_FILE);
+        set_custom_name_for_path(&second_history, Some("新会话")).unwrap();
+        let with_new_entry: Value = serde_json::from_slice(&fs::read(&native).unwrap()).unwrap();
+        assert_eq!(with_new_entry["session-2"]["provider"], "grok");
+        assert_eq!(with_new_entry["session-2"]["providerCwd"], "/project");
+        assert_eq!(with_new_entry["session-2"]["customName"], "新会话");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn native_rename_requires_matching_summary_and_never_replaces_corrupt_registry() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "ai-session-viewer-grok-rename-guard-{}-{unique}",
+            std::process::id()
+        ));
+        let session_dir = home.join("sessions").join("project").join("session-1");
+        write_session(&session_dir, "different", "/project", Some("prompt"));
+        let history = session_dir.join(CHAT_HISTORY_FILE);
+        assert!(set_custom_name_for_path(&history, Some("title")).is_err());
+        fs::write(
+            session_dir.join("summary.json"),
+            serde_json::json!({"info":{"id":"session-1","cwd":"/project"}}).to_string(),
+        )
+        .unwrap();
+        let native = native_meta_path(&home);
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        fs::write(&native, b"not valid JSON").unwrap();
+        assert!(set_custom_name_for_path(&history, Some("title")).is_err());
+        assert_eq!(fs::read(&native).unwrap(), b"not valid JSON");
+        let foreign = serde_json::json!({"session-1":{"provider":"claude","customName":"keep"}}).to_string();
+        fs::write(&native, &foreign).unwrap();
+        assert!(set_custom_name_for_path(&history, Some("title")).is_err());
+        assert_eq!(fs::read_to_string(&native).unwrap(), foreign);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn native_name_overlay_updates_cached_title_and_clear_restores_summary_title() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ai-session-viewer-grok-cache-title-{}-{unique}",
+            std::process::id()
+        ));
+        write_session(&dir, "session-1", "/project", Some("prompt"));
+        let mut summary: Value = serde_json::from_slice(&fs::read(dir.join("summary.json")).unwrap()).unwrap();
+        summary["session_summary"] = Value::String("generated".to_string());
+        fs::write(dir.join("summary.json"), summary.to_string()).unwrap();
+        let cached = cached_session_for_dir(&dir).unwrap();
+        assert_eq!(cached.entry.thread_name.as_deref(), Some("generated"));
+        let mut cache = GrokDiskCache::default();
+        cache.sessions_by_dir.insert(dir.to_string_lossy().into_owned(), cached);
+        let names = HashMap::from([("session-1".to_string(), NativeSessionNames {
+            custom: Some("custom".to_string()),
+            auto: Some("automatic".to_string()),
+        })]);
+        assert_eq!(sessions_from_cache_with_names(&cache, &names)[0].thread_name.as_deref(), Some("custom"));
+        assert_eq!(sessions_from_cache_with_names(&cache, &names)[0].alias.as_deref(), Some("custom"));
+        let auto_only = HashMap::from([("session-1".to_string(), NativeSessionNames {
+            custom: None,
+            auto: Some("automatic".to_string()),
+        })]);
+        assert_eq!(sessions_from_cache_with_names(&cache, &auto_only)[0].thread_name.as_deref(), Some("automatic"));
+        assert_eq!(sessions_from_cache_with_names(&cache, &auto_only)[0].alias, None);
+        assert_eq!(sessions_from_cache_with_names(&cache, &HashMap::new())[0].thread_name.as_deref(), Some("generated"));
+        assert_eq!(sessions_from_cache_with_names(&cache, &HashMap::new())[0].alias, None);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
