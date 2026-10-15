@@ -1,3 +1,5 @@
+import { t } from "../../i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { memo, useMemo, useState } from "react";
 import type { DisplayMessage } from "../../types";
 import { Terminal, ChevronDown, ChevronRight, Code, FileText, Copy, Check } from "lucide-react";
@@ -25,6 +27,7 @@ function OutputBlock({
   isError?: boolean;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const isLong = content.length > COLLAPSE_THRESHOLD;
   const { expanded, setExpanded } = useExpandAllControl(!isLong);
   const [viewMode, setViewMode] = useState<"source" | "md">("source");
@@ -70,8 +73,7 @@ function OutputBlock({
           )}
           {!expanded && (
             <span className="text-muted-foreground truncate">
-              {content.length} 字符
-            </span>
+              {content.length} {t("字符")}</span>
           )}
         </button>
 
@@ -84,7 +86,7 @@ function OutputBlock({
                 ? "bg-muted text-foreground"
                 : "text-muted-foreground hover:text-foreground"
             }`}
-            title="源码"
+            title={t("源码")}
           >
             <Code className="w-3 h-3" />
             <span className="text-[10px]">&lt;/&gt;</span>
@@ -96,7 +98,7 @@ function OutputBlock({
                 ? "bg-muted text-foreground"
                 : "text-muted-foreground hover:text-foreground"
             }`}
-            title="Markdown 渲染"
+            title={t("Markdown 渲染")}
           >
             <FileText className="w-3 h-3" />
             <span className="text-[10px]">MD</span>
@@ -107,18 +109,16 @@ function OutputBlock({
         <button
           onClick={handleCopy}
           className="ml-1 inline-flex shrink-0 items-center gap-1 rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-          title="复制全部内容"
+          title={t("复制全部内容")}
         >
           {copied ? (
             <>
-              <Check className="w-3 h-3 text-green-500" />
-              已复制
-            </>
+              <Check className="w-3 h-3 text-success" />
+              {t("已复制")}</>
           ) : (
             <>
               <Copy className="w-3 h-3" />
-              复制
-            </>
+              {t("复制")}</>
           )}
         </button>
       </div>
@@ -161,6 +161,7 @@ export const ToolOutputMessage = memo(function ToolOutputMessage({
   showTimestamp,
   layout = "default",
 }: Props) {
+  useTranslation();
   const timeZone = useAppStore((state) => state.timeZone);
   const isThreadLayout = layout === "thread";
 
@@ -170,7 +171,7 @@ export const ToolOutputMessage = memo(function ToolOutputMessage({
         {/* 标题行 */}
         <div className={`mb-1 flex items-center ${isThreadLayout ? "gap-1.5" : "gap-2"}`}>
           {!isThreadLayout && <Terminal className="w-3 h-3 text-muted-foreground" />}
-          <span className="text-xs font-medium text-muted-foreground">Tool Output</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("工具输出")}</span>
           {showTimestamp && message.timestamp && (
             <span className="text-xs text-muted-foreground">
               {formatTime(message.timestamp, timeZone)}
@@ -186,7 +187,7 @@ export const ToolOutputMessage = memo(function ToolOutputMessage({
           }
           if (block.type === "tool_result") {
             const cleaned = stripAnsi(block.content);
-            return <MemoizedOutputBlock key={i} content={cleaned} isError={block.isError} compact={isThreadLayout} />;
+            return <MemoizedOutputBlock key={i} content={cleaned} isError={block.is_error} compact={isThreadLayout} />;
           }
           return null;
         })}

@@ -1,7 +1,10 @@
+import { t } from "../../i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { useState, useRef, useEffect } from "react";
 import { X } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { api } from "../../services/api";
+import { EscapeToClose } from "../common/EscapeToClose";
 
 interface Props {
   source: string;
@@ -20,6 +23,7 @@ export function SessionMetaEditor({
   currentTags,
   onClose,
 }: Props) {
+  const { t } = useTranslation();
   const [alias, setAlias] = useState(currentAlias || "");
   const [tags, setTags] = useState<string[]>(currentTags || []);
   const [tagInput, setTagInput] = useState("");
@@ -122,11 +126,15 @@ export function SessionMetaEditor({
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
+      role="dialog"
+      aria-modal="true"
     >
+      <EscapeToClose onClose={onClose} />
       <div className="bg-card border border-border rounded-lg p-6 max-w-md w-full mx-4 shadow-lg">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold">{source === "grok" ? "重命名会话" : "编辑会话信息"}</h3>
           <button
+            aria-label={t("关闭")}
             onClick={onClose}
             className="p-1 rounded hover:bg-accent transition-colors"
           >
@@ -165,6 +173,7 @@ export function SessionMetaEditor({
               >
                 {tag}
                 <button
+                  aria-label={t("移除标签")}
                   onClick={() => removeTag(i)}
                   className="hover:text-destructive transition-colors"
                 >
@@ -178,7 +187,7 @@ export function SessionMetaEditor({
               value={tagInput}
               onChange={(e) => setTagInput(e.target.value)}
               onKeyDown={handleTagKeyDown}
-              placeholder={tags.length === 0 ? "输入标签后回车添加..." : ""}
+              placeholder={tags.length === 0 ? t("输入标签后回车添加...") : ""}
               className="flex-1 min-w-[80px] bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             />
           </div>
@@ -209,14 +218,13 @@ export function SessionMetaEditor({
             disabled={saving}
             className="px-4 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors"
           >
-            取消
-          </button>
+            {t("取消")}</button>
           <button
             onClick={handleSave}
             disabled={saving}
             className="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
           >
-            {saving ? "保存中..." : "保存"}
+            {saving ? t("保存中...") : t("保存")}
           </button>
         </div>
       </div>

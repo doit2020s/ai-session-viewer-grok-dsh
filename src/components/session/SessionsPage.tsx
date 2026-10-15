@@ -1,10 +1,11 @@
+import { t, getDateLocale } from "../../i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { ActionMenu } from "../common/ActionMenu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAppStore } from "../../stores/appStore";
 import {
-  ArrowLeft,
   MessageSquare,
   Clock,
   GitBranch,
@@ -24,7 +25,7 @@ import {
   PackageOpen,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
-import { zhCN } from "date-fns/locale";
+
 import { api } from "../../services/api";
 import { SessionMetaEditor } from "./SessionMetaEditor";
 import { CloneToProviderDialog } from "./CloneToProviderDialog";
@@ -34,14 +35,25 @@ import { ProjectSkillsPanel } from "../skills/ProjectSkillsPanel";
 import { saveExport, saveExportMany } from "../../services/exportHelpers";
 import type { ExportFormat, SessionIndexEntry } from "../../types";
 import { formatDateOnly, formatDateTime } from "../../utils/dateTime";
+import { getResumeCommand } from "../../utils/resumeCommand";
+import { isRemoteNodeActive } from "../../services/nodeConfig";
+import { copyTextToClipboard } from "../message/utils";
+import { EmptyState, ErrorState } from "../common/StateViews";
+import { useShallow } from "zustand/react/shallow";
+import { PageHeader } from "../common/PageHeader";
+import { EscapeToClose } from "../common/EscapeToClose";
 
 declare const __IS_TAURI__: boolean;
+// Remote-node mode routes the API to a web server, where resume_session is a
+// no-op, so only a local desktop session can open a terminal.
+const USE_TAURI_TRANSPORT = __IS_TAURI__ && !isRemoteNodeActive();
 
 function sessionFilenameBase(s: SessionIndexEntry): string {
   return s.alias || s.threadName || s.firstPrompt || s.sessionId;
 }
 
 export function SessionsPage() {
+  const { t } = useTranslation();
   const { projectId: rawProjectId } = useParams<{ projectId: string }>();
   const projectId = rawProjectId || "";
   const navigate = useNavigate();
@@ -50,6 +62,7 @@ export function SessionsPage() {
     sessions,
     invalidSessions,
     sessionsLoading,
+    sessionsError,
     selectProject,
     deleteSession,
     projects,
@@ -61,7 +74,9 @@ export function SessionsPage() {
     isBookmarked,
     bookmarks,
     timeZone,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({ source: state.source, sessions: state.sessions, invalidSessions: state.invalidSessions, sessionsLoading: state.sessionsLoading, sessionsError: state.sessionsError, selectProject: state.selectProject, deleteSession: state.deleteSession, projects: state.projects, allTags: state.allTags, tagFilter: state.tagFilter, setTagFilter: state.setTagFilter, addBookmark: state.addBookmark, removeBookmark: state.removeBookmark, isBookmarked: state.isBookmarked, bookmarks: state.bookmarks, timeZone: state.timeZone })),
+  );
 
   const project = projects.find((p) => p.id === projectId);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -130,24 +145,22 @@ export function SessionsPage() {
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const getResumeCommand = (sessionId: string) =>
-    source === "claude"
-      ? `claude --resume ${sessionId}`
-      : source === "grok"
-        ? `grok -r ${sessionId}`
-        : source === "omp"
-          ? `omp --resume ${sessionId}`
-          : `codex resume ${sessionId}`;
-
   const handleCopyCommand = async (e: React.MouseEvent, sessionId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    await navigator.clipboard.writeText(getResumeCommand(sessionId));
+    const command = getResumeCommand(source, sessionId);
+    if (!(await copyTextToClipboard(command))) {
+      setResumeError(t("复制失败，请手动复制：{{v0}}", { v0: command }));
+      setTimeout(() => setResumeError(null), 5000);
+      return;
+    }
     setCopiedId(sessionId);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const { terminalShell } = useAppStore();
+  const { terminalShell } = useAppStore(
+    useShallow((state) => ({ terminalShell: state.terminalShell })),
+  );
 
   const [resumeError, setResumeError] = useState<string | null>(null);
 
@@ -159,8 +172,12 @@ export function SessionsPage() {
   ) => {
     e.stopPropagation();
     setResumeError(null);
-    if (__IS_TAURI__) {
-      if (!projectPath) return;
+    if (USE_TAURI_TRANSPORT) {
+      if (!projectPath) {
+        setResumeError(t("找不到会话所在的项目目录，无法在终端中恢复"));
+        setTimeout(() => setResumeError(null), 5000);
+        return;
+      }
       try {
         await api.resumeSession(source, sessionId, projectPath, filePath, terminalShell);
       } catch (err) {
@@ -208,7 +225,7 @@ export function SessionsPage() {
     for (const s of sessions) {
       m.set(s.sessionId, {
         rel: s.modified
-          ? formatDistanceToNow(new Date(s.modified), { addSuffix: true, locale: zhCN })
+          ? formatDistanceToNow(new Date(s.modified), { addSuffix: true, locale: getDateLocale() })
           : null,
         created: s.created
           ? formatDateTime(s.created, timeZone, "minute")
@@ -216,7 +233,7 @@ export function SessionsPage() {
       });
     }
     return m;
-  }, [sessions, timeZone]);
+  }, [sessions, timeZone, t]);
 
   const editSession = editingSession
     ? sessions.find((s) => s.sessionId === editingSession)
@@ -375,93 +392,79 @@ export function SessionsPage() {
     <div className="flex flex-col h-full">
       <div className="workspace-list-header">
       {/* Header */}
-      <div className="workspace-page-header">
-        <button
-          onClick={() =>
-            navigate(projectId.startsWith("<codex-direct>/") ? "/direct-chat" : "/projects")
-          }
-          className="p-1 rounded hover:bg-accent transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <div className="min-w-0 flex-1">
-          <h1 className="workspace-page-title truncate">
-            {project?.shortName || projectId}
-          </h1>
-          {project && (
-            <p className="mt-1 truncate text-xs text-muted-foreground">
-              {project.displayPath}
-            </p>
-          )}
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {__IS_TAURI__ && sessions.length + invalidSessions.length > 0 && (
+      <PageHeader
+        breadcrumbs={[
+          projectId.startsWith("<codex-direct>/")
+            ? { label: t("Codex 直连对话"), to: "/direct-chat" }
+            : { label: t("所有项目"), to: "/projects" },
+          { label: project?.shortName || projectId },
+        ]}
+        title={project?.shortName || projectId}
+        description={project?.displayPath}
+        actions={<>
+          {USE_TAURI_TRANSPORT && sessions.length + invalidSessions.length > 0 && (
             <button
               onClick={handleRestoreBackup}
               disabled={batchBusy}
               className="toolbar-button"
-              title="选择会话备份 ZIP，还原到当前工作区"
+              title={t("选择会话备份 ZIP，还原到当前工作区")}
             >
-              <PackageOpen className="w-3.5 h-3.5" />还原备份
+              <PackageOpen className="w-3.5 h-3.5" />{t("还原备份")}
             </button>
           )}
-          <select aria-label="会话显示方式" className="toolbar-button" value={sessionView} onChange={(event) => { setSessionView(event.target.value); localStorage.setItem("sessionLayout", event.target.value); }}><option value="grid">网格</option><option value="list">列表</option></select>
+          <select aria-label={t("会话显示方式")} className="toolbar-button" value={sessionView} onChange={(event) => { setSessionView(event.target.value); localStorage.setItem("sessionLayout", event.target.value); }}><option value="grid">{t("网格")}</option><option value="list">{t("列表")}</option></select>
           {emptySessions.length > 0 && (
             <button
               onClick={() => {
                 setCleanSelected(new Set(emptySessions.map((s) => s.filePath)));
                 setShowCleanDialog(true);
               }}
-              className="text-xs px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-destructive hover:border-destructive/50 transition-colors flex items-center gap-1.5"
+              className="toolbar-button hover:text-destructive"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              清理空会话 ({emptySessions.length})
+              {t("清理空会话 ({{v0}})", { v0: emptySessions.length })}
             </button>
           )}
           {sessions.length > 0 && (
             selectMode ? (
               <button
                 onClick={exitSelectMode}
-                className="text-xs px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5"
+                className="toolbar-button"
               >
                 <X className="w-3.5 h-3.5" />
-                退出选择
-              </button>
+                {t("退出选择")}</button>
             ) : (
               <button
                 onClick={() => setSelectMode(true)}
-                className="text-xs px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors flex items-center gap-1.5"
+                className="toolbar-button"
               >
                 <CheckSquare className="w-3.5 h-3.5" />
-                选择
-              </button>
+                {t("选择")}</button>
             )
           )}
-        </div>
-      </div>
+        </>}
+      />
 
       {/* 损坏会话提示：has_messages 但 JSONL 中部解析失败，正常列表会过滤掉，
           但仍可在 /cleanup 里查看残存内容或清理。 */}
       {corruptSessions.length > 0 && (
-        <div className="mb-4 px-4 py-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-sm text-amber-500 flex items-center justify-between gap-3 flex-wrap">
+        <div className="mb-4 px-4 py-3 rounded-lg border border-warning/30 bg-warning/10 text-sm text-warning flex items-center justify-between gap-3 flex-wrap">
           <span className="flex items-center gap-2 min-w-0">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span className="truncate">
-              本项目有 {corruptSessions.length} 个会话因文件损坏被隐藏，未出现在下方列表中。
-            </span>
+              {t("本项目有{{v0}} 个会话因文件损坏被隐藏，未出现在下方列表中。", { v0: corruptSessions.length })}</span>
           </span>
           <button
             onClick={() => navigate("/cleanup")}
-            className="text-xs underline hover:text-amber-400 transition-colors shrink-0"
+            className="text-xs underline hover:text-warning transition-colors shrink-0"
           >
-            查看并清理 →
-          </button>
+            {t("查看并清理 →")}</button>
         </div>
       )}
 
       {/* Tag filter bar */}
       {allTags.length > 0 && (
-        <details className="workspace-filter"><summary>标签筛选{tagFilter.length > 0 ? " · 已选 " + tagFilter.length : ""}</summary>
+        <details className="workspace-filter"><summary>{t("标签筛选")}{tagFilter.length > 0 ? t(" · 已选 ") + tagFilter.length : ""}</summary>
         <div className="flex flex-wrap items-center gap-2">
           <Tag className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
           {allTags.map((tag) => (
@@ -482,8 +485,7 @@ export function SessionsPage() {
               onClick={() => setTagFilter([])}
               className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
-              清除筛选
-            </button>
+              {t("清除筛选")}</button>
           )}
         </div></details>
       )}
@@ -505,13 +507,17 @@ export function SessionsPage() {
       {/* Sessions list（虚拟化滚动容器） */}
       <div ref={scrollRef} className="workspace-list-body">
       {sessionsLoading ? (
-        <ScanProgressView label="加载会话列表" />
+        <ScanProgressView label={t("加载会话列表")} />
+      ) : sessionsError && sessions.length === 0 ? (
+        <ErrorState
+          title={t("会话列表加载失败")}
+          message={sessionsError}
+          onRetry={() => selectProject(projectId)}
+        />
       ) : filteredSessions.length === 0 ? (
-        <div className="text-muted-foreground">
-          {tagFilter.length > 0
-            ? "没有匹配筛选条件的会话。"
-            : "此项目没有会话记录。"}
-        </div>
+        <EmptyState
+          title={tagFilter.length > 0 ? t("没有匹配筛选条件的会话。") : t("此项目没有会话记录。")}
+        />
       ) : (
         <div style={{ height: rowVirtualizer.getTotalSize(), position: "relative", width: "100%" }}>
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
@@ -576,7 +582,7 @@ export function SessionsPage() {
                   )}
                   {/* Title: alias > Codex thread title > firstPrompt */}
                   <p className="text-sm font-medium text-foreground line-clamp-2">
-                    {session.alias || session.threadName || session.firstPrompt || "（无标题）"}
+                    {session.alias || session.threadName || session.firstPrompt || t("（无标题）")}
                   </p>
                   {/* Show original firstPrompt as subtitle when a generated
                       title (alias or Codex thread name) replaced it */}
@@ -591,8 +597,7 @@ export function SessionsPage() {
                     {session.messageCount != null && (
                       <span className="flex items-center gap-1">
                         <MessageSquare className="w-3 h-3" />
-                        {session.messageCount} 条消息
-                      </span>
+                        {session.messageCount} {t("条消息")}</span>
                     )}
                     {session.gitBranch && (
                       <span className="flex items-center gap-1">
@@ -608,7 +613,7 @@ export function SessionsPage() {
                     )}
                     {session.created && (
                       <span className="session-created-date text-muted-foreground/60">
-                        创建于 {dateMap.get(session.sessionId)?.created}
+                        {t("创建于")}{dateMap.get(session.sessionId)?.created}
                       </span>
                     )}
                     {session.modelProvider && (
@@ -619,7 +624,7 @@ export function SessionsPage() {
                   </div>
                 </div>
                 <div className={"session-card-menu " + (selectMode ? "hidden" : "")} onClick={(event) => event.stopPropagation()}>
-                  <ActionMenu label="操作">
+                  <ActionMenu label={t("操作")}>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -644,12 +649,12 @@ export function SessionsPage() {
                     }}
                     className={`p-1.5 text-xs rounded-md transition-colors ${
                       isBookmarked(session.sessionId)
-                        ? "text-yellow-500"
-                        : "text-muted-foreground hover:text-yellow-500"
+                        ? "text-warning"
+                        : "text-muted-foreground hover:text-warning"
                     }`}
-                    title={isBookmarked(session.sessionId) ? "取消收藏" : "收藏会话"}
+                    title={isBookmarked(session.sessionId) ? t("取消收藏") : t("收藏会话")}
                   >
-                    <Star className={`w-3.5 h-3.5 ${isBookmarked(session.sessionId) ? "fill-current" : ""}`} />{isBookmarked(session.sessionId) ? "取消收藏" : "收藏会话"}
+                    <Star className={`w-3.5 h-3.5 ${isBookmarked(session.sessionId) ? "fill-current" : ""}`} />{isBookmarked(session.sessionId) ? t("取消收藏") : t("收藏会话")}
                   </button>
                   <button
                     onClick={(e) => {
@@ -668,10 +673,9 @@ export function SessionsPage() {
                         setCloningSession(session);
                       }}
                       className="p-1.5 text-xs text-muted-foreground rounded-md hover:bg-accent hover:text-foreground transition-colors"
-                      title="克隆到其他 Provider（非破坏式）"
+                      title={t("克隆到其他 Provider（非破坏式）")}
                     >
-                      <CopyPlus className="w-3.5 h-3.5" />克隆到其他 Provider
-                    </button>
+                      <CopyPlus className="w-3.5 h-3.5" />{t("克隆到其他 Provider")}</button>
                   )}
                   {__IS_TAURI__ && source === "grok" && (
                     <button
@@ -693,12 +697,12 @@ export function SessionsPage() {
                         )
                       }
                       className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/90 flex items-center gap-1"
-                      title={__IS_TAURI__ ? "在终端中恢复此会话" : "复制恢复命令"}
+                      title={USE_TAURI_TRANSPORT ? t("在终端中恢复此会话") : t("复制恢复命令")}
                     >
-                      {__IS_TAURI__ ? (
-                        <><Play className="w-3 h-3" />终端续聊</>
+                      {USE_TAURI_TRANSPORT ? (
+                        <><Play className="w-3 h-3" />{t("终端续聊")}</>
                       ) : (
-                        <>{copiedId === session.sessionId ? "已复制" : <><Copy className="w-3 h-3" />复制命令</>}</>
+                        <>{copiedId === session.sessionId ? t("已复制") : <><Copy className="w-3 h-3" />{t("复制命令")}</>}</>
                       )}
                     </button>
                   )}
@@ -706,12 +710,12 @@ export function SessionsPage() {
                     <button
                       onClick={(e) => handleCopyCommand(e, session.sessionId)}
                       className="px-3 py-1.5 text-xs border border-border text-muted-foreground rounded-md hover:bg-accent hover:text-foreground flex items-center gap-1"
-                      title="复制恢复命令"
+                      title={t("复制恢复命令")}
                     >
                       {copiedId === session.sessionId ? (
-                        <>已复制</>
+                        <>{t("已复制")}</>
                       ) : (
-                        <><Copy className="w-3 h-3" />复制命令</>
+                        <><Copy className="w-3 h-3" />{t("复制命令")}</>
                       )}
                     </button>
                   )}
@@ -721,10 +725,9 @@ export function SessionsPage() {
                       setExportMenu({ session, rect: e.currentTarget.getBoundingClientRect() });
                     }}
                     className="p-1.5 text-xs text-muted-foreground rounded-md hover:bg-accent hover:text-foreground transition-colors"
-                    title="导出此会话"
+                    title={t("导出此会话")}
                   >
-                    <Download className="w-3.5 h-3.5" />导出会话
-                  </button>
+                    <Download className="w-3.5 h-3.5" />{t("导出会话")}</button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -732,10 +735,9 @@ export function SessionsPage() {
                       setDeleteTargetSessionId(session.sessionId);
                     }}
                     className="p-1.5 text-xs text-muted-foreground rounded-md hover:bg-destructive/10 hover:text-destructive transition-colors"
-                    title="删除此会话"
+                    title={t("删除此会话")}
                   >
-                    <Trash2 className="w-3.5 h-3.5" />删除会话
-                  </button>
+                    <Trash2 className="w-3.5 h-3.5" />{t("删除会话")}</button>
                   </ActionMenu>
                 </div>
               </div>
@@ -751,12 +753,12 @@ export function SessionsPage() {
 
       {/* Delete confirmation dialog */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
+          <EscapeToClose onClose={() => { setDeleteTarget(null); setDeleteTargetSessionId(null); }} disabled={deleting} />
           <div className="bg-card border border-border rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
-            <h3 className="text-lg font-semibold mb-2">确认删除</h3>
+            <h3 className="text-lg font-semibold mb-2">{t("确认删除")}</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              会话主文件及该会话产生的附件、快照和工具结果会一起删除。
-              {__IS_TAURI__ ? " 可从回收站完整还原。" : " 此操作不可撤销。"}
+              {t("会话及其附件、快照和工具结果会一起移入回收站，可完整还原。")}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -767,15 +769,14 @@ export function SessionsPage() {
                 disabled={deleting}
                 className="px-4 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors"
               >
-                取消
-              </button>
+                {t("取消")}</button>
               <button
                 onClick={handleDelete}
                 disabled={deleting}
                 className="px-4 py-2 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors flex items-center gap-1.5"
               >
                 {deleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                {deleting ? "删除中..." : "删除"}
+                {deleting ? t("删除中...") : t("删除")}
               </button>
             </div>
           </div>
@@ -807,12 +808,12 @@ export function SessionsPage() {
 
       {/* 清理空会话对话框 */}
       {showCleanDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
+          <EscapeToClose onClose={() => setShowCleanDialog(false)} disabled={cleaning} />
           <div className="bg-card border border-border rounded-lg p-6 max-w-md w-full mx-4 shadow-lg">
-            <h3 className="text-lg font-semibold mb-1">清理空会话</h3>
+            <h3 className="text-lg font-semibold mb-1">{t("清理空会话")}</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              以下会话没有消息记录，选择后点击删除。
-            </p>
+              {t("以下会话没有消息记录，选择后点击删除。")}</p>
             <div className="space-y-1 max-h-60 overflow-y-auto mb-4">
               {emptySessions.map((s) => (
                 <div
@@ -865,7 +866,7 @@ export function SessionsPage() {
                 }}
                 className="text-xs text-muted-foreground hover:text-foreground transition-colors"
               >
-                {cleanSelected.size === emptySessions.length ? "取消全选" : "全选"}
+                {cleanSelected.size === emptySessions.length ? t("取消全选") : t("全选")}
               </button>
               <div className="flex gap-2">
                 <button
@@ -873,8 +874,7 @@ export function SessionsPage() {
                   disabled={cleaning}
                   className="px-4 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors"
                 >
-                  取消
-                </button>
+                  {t("取消")}</button>
                 <button
                   onClick={async () => {
                     if (cleanSelected.size === 0) return;
@@ -897,7 +897,7 @@ export function SessionsPage() {
                   disabled={cleaning || cleanSelected.size === 0}
                   className="px-4 py-2 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
                 >
-                  {cleaning ? "删除中..." : `删除已选 ${cleanSelected.size} 个`}
+                  {cleaning ? t("删除中...") : t("删除已选 {{v0}} 个", { v0: cleanSelected.size })}
                 </button>
               </div>
             </div>
@@ -918,9 +918,9 @@ export function SessionsPage() {
             }}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            {selectedSessions.length === filteredSessions.length ? "取消全选" : "全选"}
+            {selectedSessions.length === filteredSessions.length ? t("取消全选") : t("全选")}
           </button>
-          <span className="text-sm text-foreground">已选 {selectedSessions.length}</span>
+          <span className="text-sm text-foreground">{t("已选")}{selectedSessions.length}</span>
           <button
             onClick={(e) => setBatchExportRect(e.currentTarget.getBoundingClientRect())}
             disabled={batchBusy || selectedSessions.length === 0}
@@ -946,14 +946,12 @@ export function SessionsPage() {
             className="text-xs px-3 py-1.5 rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors flex items-center gap-1.5 disabled:opacity-50"
           >
             {batchBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-            删除选中
-          </button>
+            {t("删除选中")}</button>
           <button
             onClick={exitSelectMode}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            退出
-          </button>
+            {t("退出")}</button>
         </div>
       )}
 
@@ -970,7 +968,7 @@ export function SessionsPage() {
       {batchExportRect && (
         <ExportFormatMenu
           anchorRect={batchExportRect}
-          title={`导出选中 ${selectedSessions.length} 个`}
+          title={t("导出选中 {{v0}} 个", { v0: selectedSessions.length })}
           onClose={() => setBatchExportRect(null)}
           onPick={(fmt) => handleBatchExport(fmt)}
         />
@@ -978,12 +976,12 @@ export function SessionsPage() {
 
       {/* 批量删除确认 */}
       {batchDeleteOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
+          <EscapeToClose onClose={() => setBatchDeleteOpen(false)} disabled={batchBusy} />
           <div className="bg-card border border-border rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
-            <h3 className="text-lg font-semibold mb-2">批量删除会话</h3>
+            <h3 className="text-lg font-semibold mb-2">{t("批量删除会话")}</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              将删除选中的 {selectedSessions.length} 个会话及其全部附件、快照和工具结果
-              {__IS_TAURI__ ? "（移入回收站，可完整还原）。" : "，此操作不可撤销。"}
+              {t("将选中的 {{v0}} 个会话及其附件、快照和工具结果移入回收站，可完整还原。", { v0: selectedSessions.length })}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -991,15 +989,14 @@ export function SessionsPage() {
                 disabled={batchBusy}
                 className="px-4 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors"
               >
-                取消
-              </button>
+                {t("取消")}</button>
               <button
                 onClick={handleBatchDelete}
                 disabled={batchBusy}
                 className="px-4 py-2 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors flex items-center gap-1.5 disabled:opacity-50"
               >
                 {batchBusy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                {batchBusy ? "删除中..." : "删除"}
+                {batchBusy ? t("删除中...") : t("删除")}
               </button>
             </div>
           </div>

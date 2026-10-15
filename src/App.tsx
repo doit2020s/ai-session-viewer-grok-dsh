@@ -1,3 +1,5 @@
+import { t } from "./i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { Suspense, lazy, type ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "./components/layout/AppLayout";
@@ -51,24 +53,30 @@ const ProviderSyncPage = lazy(async () => {
   const module = await import("./components/provider-sync/ProviderSyncPage");
   return { default: module.ProviderSyncPage };
 });
+const SettingsPage = lazy(async () => {
+  const module = await import("./components/settings/SettingsPage");
+  return { default: module.SettingsPage };
+});
 const SkillsPage = lazy(async () => {
   const module = await import("./components/skills/SkillsPage");
   return { default: module.SkillsPage };
 });
 
 function RouteFallback() {
+  const { t } = useTranslation();
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      页面加载中...
-    </div>
+      {t("页面加载中...")}</div>
   );
 }
 
 function LazyRoute({ children }: { children: ReactNode }) {
+  useTranslation();
   return <Suspense fallback={<RouteFallback />}>{children}</Suspense>;
 }
 
 function App() {
+  useTranslation();
   return (
     <>
       <AuthGate />
@@ -112,6 +120,14 @@ function App() {
           element={
             <LazyRoute>
               <SearchPage />
+            </LazyRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <LazyRoute>
+              <SettingsPage />
             </LazyRoute>
           }
         />

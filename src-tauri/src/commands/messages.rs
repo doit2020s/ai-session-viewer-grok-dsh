@@ -94,8 +94,8 @@ pub async fn edit_message(
         "dsh" => dsh::edit_message(&path, &message_id, &text),
         _ => Err("当前只支持编辑 Grok 和 DeepSeek 会话".to_string()),
     })
-        .await
-        .map_err(|error| format!("消息编辑任务失败: {error}"))?
+    .await
+    .map_err(|error| format!("消息编辑任务失败: {error}"))?
 }
 
 #[tauri::command]
@@ -110,8 +110,8 @@ pub async fn delete_message(
         "dsh" => dsh::delete_message(&path, &message_id),
         _ => Err("当前只支持删除 Grok 和 DeepSeek 会话上下文".to_string()),
     })
-        .await
-        .map_err(|error| format!("消息删除任务失败: {error}"))?
+    .await
+    .map_err(|error| format!("消息删除任务失败: {error}"))?
 }
 
 #[tauri::command]

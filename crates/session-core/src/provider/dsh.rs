@@ -48,10 +48,9 @@ fn millis_to_rfc3339(value: Option<i64>) -> Option<String> {
 }
 
 fn json_text(value: &Value) -> String {
-    value
-        .as_str()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+    value.as_str().map(ToString::to_string).unwrap_or_else(|| {
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    })
 }
 
 fn display_blocks(content: &Value) -> Vec<DisplayContentBlock> {
@@ -59,7 +58,11 @@ fn display_blocks(content: &Value) -> Vec<DisplayContentBlock> {
         return content
             .as_str()
             .filter(|text| !text.trim().is_empty())
-            .map(|text| vec![DisplayContentBlock::Text { text: text.to_string() }])
+            .map(|text| {
+                vec![DisplayContentBlock::Text {
+                    text: text.to_string(),
+                }]
+            })
             .unwrap_or_default();
     };
     blocks
@@ -69,16 +72,28 @@ fn display_blocks(content: &Value) -> Vec<DisplayContentBlock> {
                 .get("text")
                 .and_then(Value::as_str)
                 .filter(|text| !text.trim().is_empty())
-                .map(|text| DisplayContentBlock::Text { text: text.to_string() }),
+                .map(|text| DisplayContentBlock::Text {
+                    text: text.to_string(),
+                }),
             Some("reasoning") => block
                 .get("text")
                 .and_then(Value::as_str)
                 .filter(|text| !text.trim().is_empty())
-                .map(|text| DisplayContentBlock::Reasoning { text: text.to_string() }),
+                .map(|text| DisplayContentBlock::Reasoning {
+                    text: text.to_string(),
+                }),
             Some("tool-call") => Some(DisplayContentBlock::FunctionCall {
-                name: block.get("name").and_then(Value::as_str).unwrap_or("tool").to_string(),
+                name: block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string(),
                 arguments: block.get("arguments").map(json_text).unwrap_or_default(),
-                call_id: block.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                call_id: block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
             }),
             Some("tool-result") => Some(DisplayContentBlock::FunctionCallOutput {
                 call_id: block
@@ -162,7 +177,10 @@ fn session_entry(path: &Path) -> Option<SessionIndexEntry> {
         return None;
     }
     let session_id = header.get("id")?.as_str()?.to_string();
-    let cwd = header.get("cwd").and_then(Value::as_str).map(ToString::to_string);
+    let cwd = header
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
     let messages: Vec<_> = rows.iter().filter_map(display_message).collect();
     let first_prompt = messages.iter().find_map(|message| {
         (message.role == "user").then(|| {
@@ -206,7 +224,11 @@ fn session_entry(path: &Path) -> Option<SessionIndexEntry> {
         cli_version: None,
         alias: None,
         tags: None,
-        status: if messages.is_empty() { SessionStatus::Empty } else { SessionStatus::Valid },
+        status: if messages.is_empty() {
+            SessionStatus::Empty
+        } else {
+            SessionStatus::Valid
+        },
     })
 }
 
@@ -270,13 +292,20 @@ pub fn get_projects() -> Result<Vec<ProjectEntry>, String> {
     Ok(projects)
 }
 
-pub fn refresh_projects_cache() -> Result<Vec<ProjectEntry>, String> { get_projects() }
-pub fn rebuild_projects_cache() -> Result<Vec<ProjectEntry>, String> { get_projects() }
+pub fn refresh_projects_cache() -> Result<Vec<ProjectEntry>, String> {
+    get_projects()
+}
+pub fn rebuild_projects_cache() -> Result<Vec<ProjectEntry>, String> {
+    get_projects()
+}
 pub fn invalidate_paths(_paths: &[PathBuf]) {}
 
 pub fn get_sessions(project_id: &str) -> Result<Vec<SessionIndexEntry>, String> {
     let files = session_files(&project_dir(project_id)?);
-    let mut sessions: Vec<_> = files.par_iter().filter_map(|path| session_entry(path)).collect();
+    let mut sessions: Vec<_> = files
+        .par_iter()
+        .filter_map(|path| session_entry(path))
+        .collect();
     sessions.sort_by(|left, right| right.modified.cmp(&left.modified));
     Ok(sessions)
 }
@@ -398,7 +427,9 @@ fn sync_inbox_copy(rows: &mut [Value], message_id: &str, text: Option<&str>) -> 
         if row.get("type").and_then(Value::as_str) != Some("agent/inbox/spliced") {
             continue;
         }
-        let Some(inserted) = row.pointer_mut("/data/inserted").and_then(Value::as_array_mut)
+        let Some(inserted) = row
+            .pointer_mut("/data/inserted")
+            .and_then(Value::as_array_mut)
         else {
             continue;
         };
@@ -443,23 +474,37 @@ fn sync_assistant_text_stream(data: &mut Value, text: &str) -> Result<(), String
     let mut block_ends = Vec::new();
     let mut text_runs = Vec::new();
     for (position, record) in stream.iter().enumerate() {
-        let kind = record.get("type").and_then(Value::as_str).ok_or_else(unsupported)?;
+        let kind = record
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(unsupported)?;
         let (index, chunk) = match kind {
             "chunk" => {
                 let chunk = record.get("chunk").ok_or_else(unsupported)?;
-                let chunk_type = chunk.get("type").and_then(Value::as_str).ok_or_else(unsupported)?;
+                let chunk_type = chunk
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(unsupported)?;
                 match chunk_type {
                     "usage" | "finish" => continue,
                     "text-delta" => return Err(unsupported()),
-                    "block-start" | "block-end" | "reasoning-delta" | "tool-call-delta" => {
-                        (chunk.get("index").and_then(Value::as_u64).ok_or_else(unsupported)?, Some(chunk))
-                    }
+                    "block-start" | "block-end" | "reasoning-delta" | "tool-call-delta" => (
+                        chunk
+                            .get("index")
+                            .and_then(Value::as_u64)
+                            .ok_or_else(unsupported)?,
+                        Some(chunk),
+                    ),
                     _ => return Err(unsupported()),
                 }
             }
-            "text-chunks" | "reasoning-chunks" | "tool-call-chunks" => {
-                (record.get("index").and_then(Value::as_u64).ok_or_else(unsupported)?, None)
-            }
+            "text-chunks" | "reasoning-chunks" | "tool-call-chunks" => (
+                record
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(unsupported)?,
+                None,
+            ),
             _ => return Err(unsupported()),
         };
         if index > 9_007_199_254_740_991 {
@@ -473,7 +518,10 @@ fn sync_assistant_text_stream(data: &mut Value, text: &str) -> Result<(), String
         }
         if let Some(chunk) = chunk {
             if chunk.get("type").and_then(Value::as_str) == Some("block-end") {
-                let block_type = chunk.pointer("/block/type").and_then(Value::as_str).ok_or_else(unsupported)?;
+                let block_type = chunk
+                    .pointer("/block/type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(unsupported)?;
                 if block_ends.iter().any(|(seen, _, _)| *seen == index) {
                     return Err(unsupported());
                 }
@@ -488,7 +536,10 @@ fn sync_assistant_text_stream(data: &mut Value, text: &str) -> Result<(), String
     let mut edits = Vec::new();
     for (position, block) in content.iter().enumerate() {
         let index = block_order[position];
-        let block_type = block.get("type").and_then(Value::as_str).ok_or_else(unsupported)?;
+        let block_type = block
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(unsupported)?;
         let (_, end_position, end_type) = block_ends
             .iter()
             .find(|(seen, _, _)| *seen == index)
@@ -499,11 +550,21 @@ fn sync_assistant_text_stream(data: &mut Value, text: &str) -> Result<(), String
         if block_type != "text" {
             continue;
         }
-        let old_text = block.get("text").and_then(Value::as_str).ok_or_else(unsupported)?;
-        if stream[*end_position].pointer("/chunk/block/text").and_then(Value::as_str) != Some(old_text) {
+        let old_text = block
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(unsupported)?;
+        if stream[*end_position]
+            .pointer("/chunk/block/text")
+            .and_then(Value::as_str)
+            != Some(old_text)
+        {
             return Err(unsupported());
         }
-        let runs: Vec<_> = text_runs.iter().filter(|(seen, _)| *seen == index).collect();
+        let runs: Vec<_> = text_runs
+            .iter()
+            .filter(|(seen, _)| *seen == index)
+            .collect();
         if runs.len() != 1 || runs[0].1 >= *end_position {
             return Err(unsupported());
         }
@@ -512,7 +573,9 @@ fn sync_assistant_text_stream(data: &mut Value, text: &str) -> Result<(), String
         if run.get("time0").and_then(Value::as_i64).is_none()
             || !run.get("dt").is_some_and(Value::is_array)
             || !run.get("texts").is_some_and(|value| {
-                value.as_array().is_some_and(|items| !items.is_empty() && items.iter().all(Value::is_string))
+                value
+                    .as_array()
+                    .is_some_and(|items| !items.is_empty() && items.iter().all(Value::is_string))
             })
         {
             return Err(unsupported());
@@ -535,26 +598,27 @@ fn sync_assistant_text_stream(data: &mut Value, text: &str) -> Result<(), String
     Ok(())
 }
 
-fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String, bool, Option<i64>), String> {
+fn edit_rows(
+    rows: &mut [Value],
+    message_id: &str,
+    text: &str,
+) -> Result<(String, bool, Option<i64>), String> {
     let target = rows
         .iter()
         .enumerate()
-        .find_map(|(index, row)| (row_message_id(index, row).as_deref() == Some(message_id)).then_some(index))
+        .find_map(|(index, row)| {
+            (row_message_id(index, row).as_deref() == Some(message_id)).then_some(index)
+        })
         .ok_or_else(|| "找不到要编辑的 DeepSeek 消息，可能会话已被其他进程修改".to_string())?;
     let role = message_value(&rows[target])
         .map(|(role, _)| role.to_string())
         .ok_or_else(|| "只能编辑 DeepSeek 用户消息或助手消息".to_string())?;
     let target_seq = rows[target].get("seq").and_then(Value::as_i64);
-    let is_last = rows
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, row)| {
-            visible_text(row)
-                .filter(|(candidate_role, _)| *candidate_role == role.as_str())
-                .map(|_| index)
-        })
-        == Some(target);
+    let is_last = rows.iter().enumerate().rev().find_map(|(index, row)| {
+        visible_text(row)
+            .filter(|(candidate_role, _)| *candidate_role == role.as_str())
+            .map(|_| index)
+    }) == Some(target);
 
     let data = rows[target]
         .get_mut("data")
@@ -578,11 +642,16 @@ fn edit_rows(rows: &mut [Value], message_id: &str, text: &str) -> Result<(String
     Ok((role, is_last, target_seq))
 }
 
-fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool, Option<i64>), String> {
+fn delete_rows(
+    rows: &mut Vec<Value>,
+    message_id: &str,
+) -> Result<(String, bool, Option<i64>), String> {
     let target = rows
         .iter()
         .enumerate()
-        .find_map(|(index, row)| (row_message_id(index, row).as_deref() == Some(message_id)).then_some(index))
+        .find_map(|(index, row)| {
+            (row_message_id(index, row).as_deref() == Some(message_id)).then_some(index)
+        })
         .ok_or_else(|| "找不到要删除的 DeepSeek 消息，可能会话已被其他进程修改".to_string())?;
     let role = message_value(&rows[target])
         .map(|(role, _)| role.to_string())
@@ -604,18 +673,15 @@ fn delete_rows(rows: &mut Vec<Value>, message_id: &str) -> Result<(String, bool,
                 || entry.pointer("/chunk/block/type").and_then(Value::as_str) == Some("tool-call")
         });
     if has_tool_calls_in_content || has_tool_calls_in_stream {
-        return Err("这条 DeepSeek 回复含工具调用；删除它会破坏原生会话关系，已保留原文件".to_string());
+        return Err(
+            "这条 DeepSeek 回复含工具调用；删除它会破坏原生会话关系，已保留原文件".to_string(),
+        );
     }
-    let is_last = rows
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, row)| {
-            visible_text(row)
-                .filter(|(candidate_role, _)| *candidate_role == role.as_str())
-                .map(|_| index)
-        })
-        == Some(target);
+    let is_last = rows.iter().enumerate().rev().find_map(|(index, row)| {
+        visible_text(row)
+            .filter(|(candidate_role, _)| *candidate_role == role.as_str())
+            .map(|_| index)
+    }) == Some(target);
     // Native DSH logs are append-only and every event seq is used as a stable
     // reference. Erasing a physical row leaves a gap and can invalidate later
     // surface, turn, and fork references. Empty the message payload in place;
@@ -755,26 +821,20 @@ fn projection_write(
     if !cache_path.is_file() {
         return Ok(None);
     }
-    let original = fs::read(&cache_path)
-        .map_err(|error| format!("读取 DeepSeek 会话配置失败：{error}"))?;
+    let original =
+        fs::read(&cache_path).map_err(|error| format!("读取 DeepSeek 会话配置失败：{error}"))?;
     let mut cache: Value = serde_json::from_slice(&original)
-    .map_err(|error| format!("解析 DeepSeek 会话配置失败：{error}"))?;
+        .map_err(|error| format!("解析 DeepSeek 会话配置失败：{error}"))?;
     let Some(turns) = cache
         .pointer_mut("/record/rows/turnOutline/val/turns")
         .and_then(Value::as_array_mut)
     else {
         return Ok(None);
     };
-    let Some(last_turn) = turns
-        .last_mut()
-        .and_then(Value::as_object_mut)
-    else {
+    let Some(last_turn) = turns.last_mut().and_then(Value::as_object_mut) else {
         return Ok(None);
     };
-    let Some(turn_start) = last_turn
-        .get("seq")
-        .and_then(Value::as_i64)
-    else {
+    let Some(turn_start) = last_turn.get("seq").and_then(Value::as_i64) else {
         return Ok(None);
     };
     // Auto-continuation turns may have no new user message. Never copy a
@@ -785,15 +845,26 @@ fn projection_write(
     let text = rows
         .iter()
         .rev()
-        .filter(|row| row.get("seq").and_then(Value::as_i64).is_some_and(|seq| seq >= turn_start))
+        .filter(|row| {
+            row.get("seq")
+                .and_then(Value::as_i64)
+                .is_some_and(|seq| seq >= turn_start)
+        })
         .find_map(|row| visible_text(row).filter(|(candidate, _)| *candidate == role))
         .map(|(_, text)| text)
         .unwrap_or_default();
     let field = if role == "user" { "prompt" } else { "response" };
-    last_turn.insert(field.to_string(), Value::String(compact_projection_text(&text)));
+    last_turn.insert(
+        field.to_string(),
+        Value::String(compact_projection_text(&text)),
+    );
     let bytes = serde_json::to_vec_pretty(&cache)
         .map_err(|error| format!("序列化 DeepSeek 会话配置失败：{error}"))?;
-    Ok(Some(PreparedWrite { path: cache_path, bytes, original }))
+    Ok(Some(PreparedWrite {
+        path: cache_path,
+        bytes,
+        original,
+    }))
 }
 
 fn sibling_path(path: &Path, suffix: &str) -> Result<PathBuf, String> {
@@ -814,7 +885,10 @@ fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
             for (temp, _) in &staged {
                 let _ = fs::remove_file(temp);
             }
-            return Err(format!("DeepSeek 会话在编辑期间已被其他进程修改，已停止保存：{}", write.path.display()));
+            return Err(format!(
+                "DeepSeek 会话在编辑期间已被其他进程修改，已停止保存：{}",
+                write.path.display()
+            ));
         }
         let temp = sibling_path(&write.path, &format!("asv-write-{transaction}.tmp"))?;
         let backup = sibling_path(&write.path, &format!("asv-write-{transaction}.bak"))?;
@@ -839,7 +913,10 @@ fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
             .is_ok_and(|current| current.as_slice() == write.original.as_slice())
         {
             let restore_errors = rollback_writes(&writes, &staged, index);
-            return Err(format!("DeepSeek 会话在写入期间已被其他进程修改，已停止保存：{}{restore_errors}", write.path.display()));
+            return Err(format!(
+                "DeepSeek 会话在写入期间已被其他进程修改，已停止保存：{}{restore_errors}",
+                write.path.display()
+            ));
         }
         if let Err(error) = fs::rename(&write.path, backup) {
             let restore_errors = rollback_writes(&writes, &staged, index);
@@ -855,10 +932,10 @@ fn commit_writes(writes: Vec<PreparedWrite>) -> Result<(), String> {
     // while the replacement was being published.
     for (index, write) in writes.iter().enumerate() {
         let backup = &staged[index].1;
-        let backup_unchanged = fs::read(backup)
-            .is_ok_and(|current| current.as_slice() == write.original.as_slice());
-        let replacement_unchanged = fs::read(&write.path)
-            .is_ok_and(|current| current.as_slice() == write.bytes.as_slice());
+        let backup_unchanged =
+            fs::read(backup).is_ok_and(|current| current.as_slice() == write.original.as_slice());
+        let replacement_unchanged =
+            fs::read(&write.path).is_ok_and(|current| current.as_slice() == write.bytes.as_slice());
         if !backup_unchanged || !replacement_unchanged {
             return Err(format!(
                 "DeepSeek 会话在保存期间被其他进程修改，已保留备份供恢复：{}",
@@ -892,7 +969,10 @@ fn rollback_writes(
         let backup_changed = backup_bytes != writes[index].original;
         match fs::read(original) {
             Ok(current) if current != writes[index].bytes => {
-                errors.push(format!("文件 {} 已被其他进程修改，未覆盖；备份已保留", original.display()));
+                errors.push(format!(
+                    "文件 {} 已被其他进程修改，未覆盖；备份已保留",
+                    original.display()
+                ));
                 continue;
             }
             Ok(_) => {
@@ -910,14 +990,20 @@ fn rollback_writes(
                     }
                 };
                 if let Err(error) = fs::rename(original, &kept) {
-                    errors.push(format!("无法保留失败后的文件 {}：{error}", original.display()));
+                    errors.push(format!(
+                        "无法保留失败后的文件 {}：{error}",
+                        original.display()
+                    ));
                     continue;
                 }
                 preserved.push(kept);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                errors.push(format!("无法读取失败后的文件 {}：{error}", original.display()));
+                errors.push(format!(
+                    "无法读取失败后的文件 {}：{error}",
+                    original.display()
+                ));
                 continue;
             }
         }
@@ -931,11 +1017,17 @@ fn rollback_writes(
             // DSH may have appended through an open handle after original was
             // renamed to backup. Both names now refer to those latest bytes;
             // retain the backup for review and keep the session path usable.
-            errors.push(format!("备份 {} 已被其他进程修改，已恢复原路径并保留备份", backup.display()));
+            errors.push(format!(
+                "备份 {} 已被其他进程修改，已恢复原路径并保留备份",
+                backup.display()
+            ));
             continue;
         }
         if let Err(error) = fs::remove_file(backup) {
-            errors.push(format!("已恢复文件，但无法清理备份 {}：{error}", backup.display()));
+            errors.push(format!(
+                "已恢复文件，但无法清理备份 {}：{error}",
+                backup.display()
+            ));
         }
     }
     for (temp, _) in staged {
@@ -946,7 +1038,11 @@ fn rollback_writes(
     } else {
         format!(
             "；失败写入文件已保留：{}",
-            preserved.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("、")
+            preserved
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("、")
         )
     };
     if errors.is_empty() {
@@ -967,8 +1063,8 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
     let mut primary_is_last = false;
     let mut primary_target_seq = None;
     for candidate in paths {
-        let original = fs::read(&candidate)
-            .map_err(|error| format!("读取 DeepSeek 原会话失败：{error}"))?;
+        let original =
+            fs::read(&candidate).map_err(|error| format!("读取 DeepSeek 原会话失败：{error}"))?;
         let mut rows = decode_rows_from_bytes(&original)?;
         let contains_message = rows
             .iter()
@@ -984,7 +1080,11 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
             primary_target_seq = target_seq;
             primary_rows = Some(rows.clone());
         }
-        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)?, original });
+        writes.push(PreparedWrite {
+            path: candidate,
+            bytes: encode_rows(&rows)?,
+            original,
+        });
     }
     if primary_is_last {
         let role = primary_role.as_deref().unwrap_or("assistant");
@@ -1008,8 +1108,8 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
     let mut primary_was_last = false;
     let mut primary_target_seq = None;
     for candidate in paths {
-        let original = fs::read(&candidate)
-            .map_err(|error| format!("读取 DeepSeek 原会话失败：{error}"))?;
+        let original =
+            fs::read(&candidate).map_err(|error| format!("读取 DeepSeek 原会话失败：{error}"))?;
         let mut rows = decode_rows_from_bytes(&original)?;
         let contains_message = rows
             .iter()
@@ -1025,7 +1125,11 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
             primary_target_seq = target_seq;
             primary_rows = Some(rows.clone());
         }
-        writes.push(PreparedWrite { path: candidate, bytes: encode_rows(&rows)?, original });
+        writes.push(PreparedWrite {
+            path: candidate,
+            bytes: encode_rows(&rows)?,
+            original,
+        });
     }
     if primary_was_last {
         let role = primary_role.as_deref().unwrap_or("assistant");
@@ -1067,12 +1171,21 @@ pub fn parse_session_messages(
     })
 }
 
-pub fn parse_messages_range(path: &Path, start: usize, end: usize) -> Result<RangeMessages, String> {
+pub fn parse_messages_range(
+    path: &Path,
+    start: usize,
+    end: usize,
+) -> Result<RangeMessages, String> {
     let all = parse_all_messages(path)?;
     let total = all.len();
     let start = start.min(total);
     let end = end.min(total).max(start);
-    Ok(RangeMessages { messages: all[start..end].to_vec(), total, start, end })
+    Ok(RangeMessages {
+        messages: all[start..end].to_vec(),
+        total,
+        start,
+        end,
+    })
 }
 
 #[cfg(test)]
@@ -1091,7 +1204,11 @@ mod tests {
         writeln!(encoder, r#"{{"type":"session","version":3,"id":"session-1","createdAt":1000,"cwd":"C:\\\\work"}}"#).unwrap();
         writeln!(encoder, r#"{{"type":"user/message","time":2000,"data":{{"id":"u1","content":[{{"type":"text","text":"hello"}}]}}}}"#).unwrap();
         writeln!(encoder, r#"{{"type":"assistant/message","time":3000,"data":{{"message":{{"id":"a1","content":[{{"type":"reasoning","text":"think"}},{{"type":"text","text":"world"}}],"source":{{"provider":"deepseek","model":"deepseek-chat"}}}}}}}}"#).unwrap();
-        writeln!(encoder, r#"{{"type":"session/title","time":4000,"data":{{"title":"Named session"}}}}"#).unwrap();
+        writeln!(
+            encoder,
+            r#"{{"type":"session/title","time":4000,"data":{{"title":"Named session"}}}}"#
+        )
+        .unwrap();
         encoder.finish().unwrap();
 
         let entry = session_entry(&path).unwrap();
@@ -1121,7 +1238,10 @@ mod tests {
         ];
         let bytes = encode_rows(&rows).unwrap();
         let first_size = zstd::zstd_safe::find_frame_compressed_size(&bytes).unwrap();
-        assert!(first_size < bytes.len(), "event rows require a second frame");
+        assert!(
+            first_size < bytes.len(),
+            "event rows require a second frame"
+        );
         let header = zstd::stream::decode_all(&bytes[..first_size]).unwrap();
         let header_text = std::str::from_utf8(&header).unwrap();
         assert!(header_text.ends_with('\n'));
@@ -1141,14 +1261,23 @@ mod tests {
     #[test]
     fn refuses_to_remove_a_tool_call_message_without_touching_its_log() {
         let root = std::env::temp_dir().join(format!("dsh-tool-delete-{}", uuid::Uuid::new_v4()));
-        let path = root.join("sessions").join("workspace").join("session-1").join(SESSION_FILES[0]);
-        write_compressed(&path, &[
-            serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
-            serde_json::json!({"type":"assistant/message","seq":0,"data":{"message":{"id":"a1","content":[{"type":"tool-call","id":"call-1","name":"test","arguments":"{}"}]}}}),
-            serde_json::json!({"type":"tool/call","seq":1,"data":{"callId":"call-1","name":"test"}}),
-        ]);
+        let path = root
+            .join("sessions")
+            .join("workspace")
+            .join("session-1")
+            .join(SESSION_FILES[0]);
+        write_compressed(
+            &path,
+            &[
+                serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
+                serde_json::json!({"type":"assistant/message","seq":0,"data":{"message":{"id":"a1","content":[{"type":"tool-call","id":"call-1","name":"test","arguments":"{}"}]}}}),
+                serde_json::json!({"type":"tool/call","seq":1,"data":{"callId":"call-1","name":"test"}}),
+            ],
+        );
         let before = fs::read(&path).unwrap();
-        assert!(delete_message(&path, "a1").unwrap_err().contains("工具调用"));
+        assert!(delete_message(&path, "a1")
+            .unwrap_err()
+            .contains("工具调用"));
         assert_eq!(fs::read(&path).unwrap(), before);
         let _ = fs::remove_dir_all(root);
     }
@@ -1156,20 +1285,30 @@ mod tests {
     #[test]
     fn refuses_to_edit_an_assistant_without_a_matching_stream() {
         let root = std::env::temp_dir().join(format!("dsh-unsafe-edit-{}", uuid::Uuid::new_v4()));
-        let path = root.join("sessions").join("workspace").join("session-1").join(SESSION_FILES[0]);
-        write_compressed(&path, &[
-            serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
-            serde_json::json!({"type":"assistant/message","seq":0,"data":{"stream":[{"type":"text-chunks","time0":1,"index":0,"dt":[],"texts":["old"]}],"message":{"id":"a1","content":[{"type":"text","text":"old"}]}}}),
-        ]);
+        let path = root
+            .join("sessions")
+            .join("workspace")
+            .join("session-1")
+            .join(SESSION_FILES[0]);
+        write_compressed(
+            &path,
+            &[
+                serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
+                serde_json::json!({"type":"assistant/message","seq":0,"data":{"stream":[{"type":"text-chunks","time0":1,"index":0,"dt":[],"texts":["old"]}],"message":{"id":"a1","content":[{"type":"text","text":"old"}]}}}),
+            ],
+        );
         let before = fs::read(&path).unwrap();
-        assert!(edit_message(&path, "a1", "new").unwrap_err().contains("流格式无法安全同步"));
+        assert!(edit_message(&path, "a1", "new")
+            .unwrap_err()
+            .contains("流格式无法安全同步"));
         assert_eq!(fs::read(&path).unwrap(), before);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn refuses_to_overwrite_an_external_append() {
-        let root = std::env::temp_dir().join(format!("dsh-concurrent-write-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dsh-concurrent-write-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("session.v4.jsonl.zstd");
         fs::write(&path, b"original").unwrap();
@@ -1179,14 +1318,17 @@ mod tests {
             original: b"original".to_vec(),
         };
         fs::write(&path, b"original plus DSH append").unwrap();
-        assert!(commit_writes(vec![prepared]).unwrap_err().contains("其他进程修改"));
+        assert!(commit_writes(vec![prepared])
+            .unwrap_err()
+            .contains("其他进程修改"));
         assert_eq!(fs::read(&path).unwrap(), b"original plus DSH append");
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn rollback_preserves_viewer_copy_and_never_removes_concurrent_content() {
-        let root = std::env::temp_dir().join(format!("dsh-rollback-preserve-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dsh-rollback-preserve-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("session.v4.jsonl.zstd");
         let backup = sibling_path(&path, "test.bak").unwrap();
@@ -1224,7 +1366,8 @@ mod tests {
 
     #[test]
     fn rollback_restores_a_backup_appended_after_rename() {
-        let root = std::env::temp_dir().join(format!("dsh-rollback-appended-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dsh-rollback-appended-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("session.v4.jsonl.zstd");
         let backup = sibling_path(&path, "test.bak").unwrap();
@@ -1314,12 +1457,24 @@ mod tests {
                 matches!(block, DisplayContentBlock::Reasoning { text } if text == "private")
             }));
             let rows = decode_rows(path).unwrap();
-            assert_eq!(rows[4].pointer("/data/stream/3/texts/0").and_then(Value::as_str), Some("updated answer"));
-            assert_eq!(rows[4].pointer("/data/stream/4/chunk/block/text").and_then(Value::as_str), Some("updated answer"));
+            assert_eq!(
+                rows[4]
+                    .pointer("/data/stream/3/texts/0")
+                    .and_then(Value::as_str),
+                Some("updated answer")
+            );
+            assert_eq!(
+                rows[4]
+                    .pointer("/data/stream/4/chunk/block/text")
+                    .and_then(Value::as_str),
+                Some("updated answer")
+            );
         }
         let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
         assert_eq!(
-            projection.pointer("/record/rows/turnOutline/val/turns/0/response").and_then(Value::as_str),
+            projection
+                .pointer("/record/rows/turnOutline/val/turns/0/response")
+                .and_then(Value::as_str),
             Some("updated answer")
         );
 
@@ -1329,30 +1484,57 @@ mod tests {
             assert_eq!(messages.len(), 2);
             assert_eq!(messages[1].uuid.as_deref(), Some("a1"));
             let rows = decode_rows(path).unwrap();
-            assert_eq!(rows[4].pointer("/data/message/content"), Some(&serde_json::json!([])));
-            assert_eq!(rows[4].pointer("/data/stream"), Some(&serde_json::json!([])));
+            assert_eq!(
+                rows[4].pointer("/data/message/content"),
+                Some(&serde_json::json!([]))
+            );
+            assert_eq!(
+                rows[4].pointer("/data/stream"),
+                Some(&serde_json::json!([]))
+            );
             assert!(rows.iter().skip(1).enumerate().all(|(index, row)| {
                 row.get("seq").and_then(Value::as_u64) == Some(index as u64)
             }));
         }
         let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
         assert_eq!(
-            projection.pointer("/record/rows/turnOutline/val/turns/0/response").and_then(Value::as_str),
+            projection
+                .pointer("/record/rows/turnOutline/val/turns/0/response")
+                .and_then(Value::as_str),
             Some("first answer")
         );
-        assert_eq!(session_files(&root.join("sessions").join("workspace")), vec![v4.clone()]);
+        assert_eq!(
+            session_files(&root.join("sessions").join("workspace")),
+            vec![v4.clone()]
+        );
 
         edit_message(&v4, "u1", "changed question").unwrap();
         for path in [&v4, &v3] {
             let rows = decode_rows(path).unwrap();
-            assert_eq!(rows[1].pointer("/data/inserted/0/content/0/text").and_then(Value::as_str), Some("changed question"));
-            assert_eq!(rows[2].pointer("/data/content/0/text").and_then(Value::as_str), Some("changed question"));
+            assert_eq!(
+                rows[1]
+                    .pointer("/data/inserted/0/content/0/text")
+                    .and_then(Value::as_str),
+                Some("changed question")
+            );
+            assert_eq!(
+                rows[2]
+                    .pointer("/data/content/0/text")
+                    .and_then(Value::as_str),
+                Some("changed question")
+            );
         }
         delete_message(&v4, "u1").unwrap();
         for path in [&v4, &v3] {
             let rows = decode_rows(path).unwrap();
-            assert_eq!(rows[1].pointer("/data/inserted/0/content"), Some(&serde_json::json!([])));
-            assert_eq!(rows[2].pointer("/data/content"), Some(&serde_json::json!([])));
+            assert_eq!(
+                rows[1].pointer("/data/inserted/0/content"),
+                Some(&serde_json::json!([]))
+            );
+            assert_eq!(
+                rows[2].pointer("/data/content"),
+                Some(&serde_json::json!([]))
+            );
             assert_eq!(parse_all_messages(path).unwrap().len(), 1);
         }
 
@@ -1367,31 +1549,44 @@ mod tests {
             .join("workspace")
             .join("session-1")
             .join(SESSION_FILES[0]);
-        write_compressed(&path, &[
-            serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
-            serde_json::json!({"type":"turn/start","seq":0,"data":{"turn":1}}),
-            serde_json::json!({"type":"user/message","seq":1,"data":{"id":"u1","content":[{"type":"text","text":"old"}]}}),
-            serde_json::json!({"type":"turn/start","seq":2,"data":{"turn":2}}),
-            serde_json::json!({"type":"assistant/message","seq":3,"data":{"turn":2,"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
-        ]);
+        write_compressed(
+            &path,
+            &[
+                serde_json::json!({"type":"session","version":4,"id":"session-1","cwd":"C:\\work"}),
+                serde_json::json!({"type":"turn/start","seq":0,"data":{"turn":1}}),
+                serde_json::json!({"type":"user/message","seq":1,"data":{"id":"u1","content":[{"type":"text","text":"old"}]}}),
+                serde_json::json!({"type":"turn/start","seq":2,"data":{"turn":2}}),
+                serde_json::json!({"type":"assistant/message","seq":3,"data":{"turn":2,"message":{"id":"a1","content":[{"type":"text","text":"answer"}]}}}),
+            ],
+        );
         let cache = root
             .join("storages")
             .join("session_projcache")
             .join("sessions")
             .join("session-1.json");
         fs::create_dir_all(cache.parent().unwrap()).unwrap();
-        fs::write(&cache, serde_json::json!({
-            "record":{"rows":{"turnOutline":{"val":{"turns":[
-                {"turn":1,"seq":0,"prompt":"old","response":""},
-                {"turn":2,"seq":2,"prompt":"","response":"answer"}
-            ]}}}}
-        }).to_string()).unwrap();
+        fs::write(
+            &cache,
+            serde_json::json!({
+                "record":{"rows":{"turnOutline":{"val":{"turns":[
+                    {"turn":1,"seq":0,"prompt":"old","response":""},
+                    {"turn":2,"seq":2,"prompt":"","response":"answer"}
+                ]}}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
         let old_backup = sibling_path(&path, "asv-write.bak").unwrap();
         fs::write(&old_backup, b"previous recovery copy").unwrap();
 
         edit_message(&path, "u1", "new").unwrap();
         let projection: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
-        assert_eq!(projection.pointer("/record/rows/turnOutline/val/turns/1/prompt").and_then(Value::as_str), Some(""));
+        assert_eq!(
+            projection
+                .pointer("/record/rows/turnOutline/val/turns/1/prompt")
+                .and_then(Value::as_str),
+            Some("")
+        );
         assert_eq!(fs::read(&old_backup).unwrap(), b"previous recovery copy");
         assert_eq!(parse_all_messages(&path).unwrap()[0].content.len(), 1);
 

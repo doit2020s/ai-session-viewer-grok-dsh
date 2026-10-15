@@ -11,8 +11,12 @@ use crate::state::{
     store_partial_messages, tail_window_len,
 };
 
-/// Types of records to skip during parsing (large/irrelevant)
-const SKIP_TYPES: &[&str] = &["file-history-snapshot", "progress"];
+/// Line-level markers for record types that never produce display messages.
+/// Pre-built so the per-line check doesn't allocate.
+const SKIP_TYPE_MARKERS: &[&str] = &[
+    "\"type\":\"file-history-snapshot\"",
+    "\"type\":\"progress\"",
+];
 
 /// Parse a JSONL session file and return paginated display messages.
 /// Uses line-level pre-filtering to skip irrelevant record types.
@@ -79,9 +83,9 @@ fn parse_tail_messages(
         }
 
         // Line-level pre-filter: skip known large/irrelevant record types
-        if SKIP_TYPES
+        if SKIP_TYPE_MARKERS
             .iter()
-            .any(|t| trimmed.contains(&format!("\"type\":\"{}\"", t)))
+            .any(|marker| trimmed.contains(marker))
         {
             continue;
         }
@@ -194,12 +198,26 @@ pub fn parse_messages_range(
     })
 }
 
-/// Parse all messages from a JSONL file (no pagination, for search)
+/// Parse all messages from a JSONL file and memoize them in the message cache.
 pub fn parse_all_messages(path: &Path) -> Result<Vec<DisplayMessage>, String> {
     if let Ok(Some(cached)) = get_cached_full_messages(path) {
         return Ok(cached);
     }
+    let messages = parse_all_messages_uncached(path)?;
+    let _ = store_full_messages(path, &messages);
+    Ok(messages)
+}
 
+/// Full parse for search: reuse a cached parse but never populate the cache,
+/// so scanning many hits can't evict the session the user is viewing.
+pub fn parse_all_messages_for_search(path: &Path) -> Result<Vec<DisplayMessage>, String> {
+    if let Ok(Some(cached)) = get_cached_full_messages(path) {
+        return Ok(cached);
+    }
+    parse_all_messages_uncached(path)
+}
+
+fn parse_all_messages_uncached(path: &Path) -> Result<Vec<DisplayMessage>, String> {
     let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
     let reader = BufReader::new(file);
     let mut messages: Vec<DisplayMessage> = Vec::new();
@@ -213,9 +231,9 @@ pub fn parse_all_messages(path: &Path) -> Result<Vec<DisplayMessage>, String> {
         if trimmed.is_empty() {
             continue;
         }
-        if SKIP_TYPES
+        if SKIP_TYPE_MARKERS
             .iter()
-            .any(|t| trimmed.contains(&format!("\"type\":\"{}\"", t)))
+            .any(|marker| trimmed.contains(marker))
         {
             continue;
         }
@@ -230,7 +248,6 @@ pub fn parse_all_messages(path: &Path) -> Result<Vec<DisplayMessage>, String> {
         }
     }
 
-    let _ = store_full_messages(path, &messages);
     Ok(messages)
 }
 

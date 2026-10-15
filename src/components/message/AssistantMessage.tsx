@@ -1,3 +1,5 @@
+import { t } from "../../i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { memo, useMemo, useState } from "react";
 import type { DisplayMessage } from "../../types";
 import { Bot, ChevronDown, ChevronRight, Wrench, Brain, Copy, Check } from "lucide-react";
@@ -8,9 +10,14 @@ import { useExpandAllControl } from "../common/ExpandAllContext";
 import { useAppStore } from "../../stores/appStore";
 import { OmpMark } from "../layout/ProviderMarks";
 
+export type ToolResultLookup = Map<string, { content: string; isError: boolean }>;
+
 interface Props {
   message: DisplayMessage;
   source: string;
+  /** tool_use id → result from the following tool message, so viewers like
+   *  Read can show the file they read instead of "无内容". */
+  toolResults?: ToolResultLookup;
   showTimestamp: boolean;
   showModel: boolean;
   threadAnchor?: string | null;
@@ -23,12 +30,14 @@ const MARKDOWN_CLASS_NAME = "prose prose-sm max-w-none p-0 text-sm leading-relax
 export const AssistantMessage = memo(function AssistantMessage({
   message,
   source,
+  toolResults,
   showTimestamp,
   showModel,
   threadAnchor,
   threadHint,
   layout = "default",
 }: Props) {
+  const { t } = useTranslation();
   const timeZone = useAppStore((state) => state.timeZone);
   const assistantName = source === "codex" ? "Codex" : source === "omp" ? "Oh My Pi" : source === "grok" ? "Grok" : source === "dsh" ? "DeepSeek" : source === "kiro" ? "Kiro" : "Claude";
   const iconColor = source === "codex" ? "text-green-500" : source === "omp" ? "text-fuchsia-500" : "text-orange-500";
@@ -53,11 +62,11 @@ export const AssistantMessage = memo(function AssistantMessage({
       return raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
     }
     const hasTool = message.content.some((b) => b.type === "tool_use" || b.type === "function_call");
-    if (hasTool) return "（工具调用）";
+    if (hasTool) return t("（工具调用）");
     const hasThinking = message.content.some((b) => b.type === "thinking" || b.type === "reasoning");
-    if (hasThinking) return "（思考过程）";
-    return "（回复内容）";
-  }, [copyText, message.content]);
+    if (hasThinking) return t("（思考过程）");
+    return t("（回复内容）");
+  }, [copyText, message.content, t]);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -76,7 +85,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       <button
         onClick={() => setMessageExpanded(!messageExpanded)}
         className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-        title={messageExpanded ? "折叠此回复" : "展开此回复"}
+        title={messageExpanded ? t("折叠此回复") : t("展开此回复")}
       >
         {messageExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
       </button>
@@ -102,18 +111,16 @@ export const AssistantMessage = memo(function AssistantMessage({
     <button
       onClick={handleCopy}
       className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      title="复制消息"
+      title={t("复制消息")}
     >
       {copied ? (
         <>
-          <Check className="h-3.5 w-3.5 text-green-500" />
-          已复制
-        </>
+          <Check className="h-3.5 w-3.5 text-success" />
+          {t("已复制")}</>
       ) : (
         <>
           <Copy className="h-3.5 w-3.5" />
-          复制文本
-        </>
+          {t("复制文本")}</>
       )}
     </button>
   ) : null;
@@ -139,7 +146,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           <button
             onClick={() => setMessageExpanded(true)}
             className="block w-full rounded-md bg-muted/30 px-3 py-2 text-left text-sm text-foreground/85 hover:bg-muted/60 transition-colors"
-            title="展开此回复"
+            title={t("展开此回复")}
           >
             <span className="line-clamp-2">{previewText}</span>
           </button>
@@ -167,6 +174,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                 key={i}
                 name={block.name}
                 input={block.input}
+                result={toolResults?.get(block.id) ?? null}
               />
             );
           }
@@ -195,6 +203,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 ));
 
 function ThinkingBlock({ thinking, layout = "default" }: { thinking: string; layout?: "default" | "thread" }) {
+  const { t } = useTranslation();
   const { expanded, setExpanded } = useExpandAllControl(false);
   const isThreadLayout = layout === "thread";
 
@@ -205,8 +214,7 @@ function ThinkingBlock({ thinking, layout = "default" }: { thinking: string; lay
         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <Brain className="w-3.5 h-3.5 shrink-0" />
-        思考过程
-        {expanded ? (
+        {t("思考过程")}{expanded ? (
           <ChevronDown className="w-3 h-3" />
         ) : (
           <ChevronRight className="w-3 h-3" />
@@ -226,6 +234,7 @@ function ThinkingBlock({ thinking, layout = "default" }: { thinking: string; lay
 }
 
 function ReasoningBlock({ text, layout = "default" }: { text: string; layout?: "default" | "thread" }) {
+  const { t } = useTranslation();
   const { expanded, setExpanded } = useExpandAllControl(true);
   const isThreadLayout = layout === "thread";
 
@@ -236,8 +245,7 @@ function ReasoningBlock({ text, layout = "default" }: { text: string; layout?: "
         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <Brain className="w-3.5 h-3.5 shrink-0" />
-        推理过程
-        {expanded ? (
+        {t("推理过程")}{expanded ? (
           <ChevronDown className="w-3 h-3" />
         ) : (
           <ChevronRight className="w-3 h-3" />
@@ -257,6 +265,7 @@ function ReasoningBlock({ text, layout = "default" }: { text: string; layout?: "
 }
 
 function FunctionCallBlock({ name, arguments: args }: { name: string; arguments: string }) {
+  useTranslation();
   const { expanded, setExpanded } = useExpandAllControl(true);
   const cleanedArgs = useMemo(() => {
     const cleaned = stripAnsi(args);
@@ -271,7 +280,7 @@ function FunctionCallBlock({ name, arguments: args }: { name: string; arguments:
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center gap-2 px-3 py-2 text-xs bg-muted/50 hover:bg-muted transition-colors"
       >
-        <Wrench className="w-3.5 h-3.5 text-green-500" />
+        <Wrench className="w-3.5 h-3.5 text-success" />
         <span className="font-mono font-medium">{name}</span>
         {expanded ? (
           <ChevronDown className="w-3 h-3 ml-auto" />

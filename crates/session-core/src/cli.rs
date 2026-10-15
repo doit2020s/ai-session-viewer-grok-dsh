@@ -1,6 +1,9 @@
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// On Windows, suppress the transient cmd console window that would otherwise
 /// flash up every time we shell out to `where` / `<cli> --version` from a
@@ -38,6 +41,14 @@ pub fn normalize_source(source: &str) -> Result<&'static str, String> {
         Ok("omp")
     } else {
         Err(format!("Unsupported source: {}", source))
+    }
+}
+
+/// The fork keeps native Grok and Oh My Pi in-app chat support.
+pub fn normalize_chat_source(source: &str) -> Result<&'static str, String> {
+    match normalize_source(source)? {
+        source @ ("claude" | "codex" | "grok" | "omp") => Ok(source),
+        other => Err(format!("In-app chat does not support source: {other}")),
     }
 }
 
@@ -184,6 +195,8 @@ pub fn find_node() -> Option<String> {
 
 /// Discover installed CLIs available to the in-app chat harness.
 pub fn discover_installations() -> Vec<CliInstallation> {
+    // Explicit detection (e.g. the settings "refresh") re-resolves from scratch.
+    which_cache().lock().clear();
     let mut installations = Vec::new();
 
     if let Ok(path) = find_cli("claude") {
@@ -223,8 +236,35 @@ pub fn discover_installations() -> Vec<CliInstallation> {
     installations
 }
 
-/// Use `where` (Windows) or `which` (Unix) to find a binary.
+fn which_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Memoized `which_binary_uncached`. Lookups may spawn several login shells,
+/// and chat resolves the CLI + node on every turn. Only hits are cached and
+/// re-checked for existence, so a later install is still picked up.
 fn which_binary(name: &str) -> Option<String> {
+    if let Some(path) = which_cache().lock().get(name).cloned() {
+        if Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    let found = which_binary_uncached(name);
+    let mut cache = which_cache().lock();
+    match &found {
+        Some(path) => {
+            cache.insert(name.to_string(), path.clone());
+        }
+        None => {
+            cache.remove(name);
+        }
+    }
+    found
+}
+
+/// Use `where` (Windows) or `which` (Unix) to find a binary.
+fn which_binary_uncached(name: &str) -> Option<String> {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("where");

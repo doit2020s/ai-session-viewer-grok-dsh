@@ -1,3 +1,4 @@
+import { t } from "../i18n/index.js";
 import type {
   ProjectEntry,
   SessionIndexEntry,
@@ -465,7 +466,7 @@ export async function importSkills(
   overwrite: boolean,
 ): Promise<ImportResult> {
   if (typeof archive === "string") {
-    throw new Error("Web 模式导入需要选择文件");
+    throw new Error(t("Web 模式导入需要选择文件"));
   }
   const url = new URL("/api/skills/import", getApiBaseUrl());
   url.searchParams.set("scope", scope);
@@ -654,7 +655,7 @@ export async function listModels(
   return apiPost("/api/models", { source, apiKey, baseUrl });
 }
 
-// Chat WebSocket connection — managed externally by useChatStream
+// Chat WebSocket connection (shared by all chat panes)
 let chatWs: WebSocket | null = null;
 const chatWsSubscribers = new Set<(rawMessage: string) => void>();
 let chatWsOpenPromise: Promise<WebSocket> | null = null;

@@ -1,3 +1,5 @@
+import { t } from "../../i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Sparkles,
@@ -13,6 +15,7 @@ import {
 import { api } from "../../services/api";
 import { MarkdownContent } from "../message/MarkdownContent";
 import type { SkillEntry } from "../../types";
+import { EscapeToClose } from "../common/EscapeToClose";
 
 /** Strip the leading YAML frontmatter block so the rendered Markdown body
  *  doesn't start with a raw `--- name: ... ---` dump. */
@@ -30,14 +33,14 @@ export function stripFrontmatter(md: string): string {
 }
 
 const SCOPE_LABEL: Record<SkillEntry["scope"], string> = {
-  global: "全局",
-  project: "项目",
-  plugin: "插件",
+  get global() { return t("全局"); },
+  get project() { return t("项目"); },
+  get plugin() { return t("插件"); },
 };
 
 const SCOPE_BADGE_CLASS: Record<SkillEntry["scope"], string> = {
-  global: "bg-blue-500/15 text-blue-500",
-  project: "bg-green-500/15 text-green-500",
+  global: "bg-info/15 text-info",
+  project: "bg-success/15 text-success",
   plugin: "bg-purple-500/15 text-purple-500",
 };
 
@@ -51,6 +54,7 @@ export function SkillCard({
   /** When provided, a delete affordance is shown on hover. */
   onDelete?: (skill: SkillEntry) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="relative group">
       <button
@@ -65,7 +69,7 @@ export function SkillCard({
           {skill.isSymlink && (
             <Link2
               className="w-3 h-3 text-muted-foreground/60 shrink-0"
-              aria-label="符号链接"
+              aria-label={t("符号链接")}
             />
           )}
           {skill.sourceLabel && (
@@ -75,7 +79,7 @@ export function SkillCard({
           )}
         </div>
         <p className="text-xs text-muted-foreground line-clamp-2">
-          {skill.description || "（无描述）"}
+          {skill.description || t("（无描述）")}
         </p>
       </button>
       {onDelete && (
@@ -85,7 +89,7 @@ export function SkillCard({
             onDelete(skill);
           }}
           className="absolute top-2 right-2 p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground hover:!text-destructive hover:bg-accent/50 transition-colors"
-          title="删除此 skill"
+          title={t("删除此 skill")}
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
@@ -109,6 +113,7 @@ export function SkillSection({
   onDelete?: (skill: SkillEntry) => void;
   emptyHint: string;
 }) {
+  useTranslation();
   return (
     <section className="mb-5">
       <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground mb-2">
@@ -149,27 +154,31 @@ export function SkillDeleteConfirm({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
     >
+      <EscapeToClose onClose={onCancel} />
       <div
         className="bg-card border border-border rounded-lg p-6 max-w-sm w-full shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 mb-3">
           <AlertTriangle className="w-5 h-5 text-destructive shrink-0" />
-          <h3 className="text-base font-semibold text-foreground">删除 Skill</h3>
+          <h3 className="text-base font-semibold text-foreground">{t("删除 Skill")}</h3>
         </div>
         <p className="text-sm text-muted-foreground mb-2">
-          确定删除 <span className="font-medium text-foreground">{skill.name}</span>
+          {t("确定删除")}<span className="font-medium text-foreground">{skill.name}</span>
           （{skill.slug}）？
         </p>
         <p className="text-xs text-muted-foreground mb-4">
           {skill.isSymlink
-            ? "该 skill 是符号链接，仅移除链接，原始文件保留。"
-            : "将永久删除该 skill 目录及其全部内容，此操作不可恢复。"}
+            ? t("该 skill 是符号链接，仅移除链接，原始文件保留。")
+            : t("将永久删除该 skill 目录及其全部内容，此操作不可恢复。")}
         </p>
         {error && (
           <p className="text-xs text-destructive mb-3 flex items-center gap-1">
@@ -183,15 +192,14 @@ export function SkillDeleteConfirm({
             disabled={busy}
             className="px-4 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors disabled:opacity-50"
           >
-            取消
-          </button>
+            {t("取消")}</button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="px-4 py-2 text-sm rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-50 flex items-center gap-1.5"
           >
             {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            {skill.isSymlink ? "移除链接" : "永久删除"}
+            {skill.isSymlink ? t("移除链接") : t("永久删除")}
           </button>
         </div>
       </div>
@@ -206,6 +214,7 @@ export function SkillDetailModal({
   skill: SkillEntry;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -247,7 +256,10 @@ export function SkillDetailModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
     >
+      <EscapeToClose onClose={onClose} />
       <div
         className="bg-card border border-border rounded-lg shadow-lg w-[52rem] max-w-full max-h-[85vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
@@ -283,17 +295,18 @@ export function SkillDetailModal({
                 setTimeout(() => setCopied(false), 1500);
               }}
               className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-foreground font-mono transition-colors max-w-full"
-              title="复制路径"
+              title={t("复制路径")}
             >
               <span className="truncate">{skill.path}</span>
               {copied ? (
-                <Check className="w-3 h-3 text-green-500 shrink-0" />
+                <Check className="w-3 h-3 text-success shrink-0" />
               ) : (
                 <Copy className="w-3 h-3 shrink-0" />
               )}
             </button>
           </div>
           <button
+            aria-label={t("关闭")}
             onClick={onClose}
             className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors shrink-0"
           >
@@ -306,8 +319,7 @@ export function SkillDetailModal({
           {loading ? (
             <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
               <Loader2 className="w-4 h-4 animate-spin" />
-              加载中...
-            </div>
+              {t("加载中...")}</div>
           ) : error ? (
             <div className="flex items-center gap-2 p-4 text-sm text-destructive">
               <AlertCircle className="w-4 h-4 shrink-0" />
