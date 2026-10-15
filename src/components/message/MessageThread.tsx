@@ -1,7 +1,9 @@
+import { t } from "../../i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { DisplayMessage } from "../../types";
 import { UserMessage } from "./UserMessage";
-import { AssistantMessage } from "./AssistantMessage";
+import { AssistantMessage, type ToolResultLookup } from "./AssistantMessage";
 import { ToolOutputMessage } from "./ToolOutputMessage";
 import { useAppStore } from "../../stores/appStore";
 import { Star, GitFork, Play, Loader2, ChevronDown, ChevronRight, Pencil, Save, X, Trash2 } from "lucide-react";
@@ -93,13 +95,13 @@ function estimatePlaceholderHeight(node: ThreadDisplayNode): number {
 function getPlaceholderLabel(node: ThreadDisplayNode) {
   switch (node.message.role) {
     case "user":
-      return "用户消息";
+      return t("用户消息");
     case "assistant":
-      return "助手回复";
+      return t("助手回复");
     case "tool":
-      return "工具输出";
+      return t("工具输出");
     default:
-      return "消息";
+      return t("消息");
   }
 }
 
@@ -112,6 +114,7 @@ function DeferredMessagePlaceholder({
   estimatedHeight: number;
   isThreaded: boolean;
 }) {
+  const { t } = useTranslation();
   const isUser = node.message.role === "user" && !isThreaded;
 
   return (
@@ -128,7 +131,7 @@ function DeferredMessagePlaceholder({
       >
         <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
           <span>{getPlaceholderLabel(node)}</span>
-          <span className="truncate">{node.threadTitle || "正在准备内容..."}</span>
+          <span className="truncate">{node.threadTitle || t("正在准备内容...")}</span>
         </div>
         <div className="space-y-2">
           <div className="h-3 rounded bg-muted/70" />
@@ -155,6 +158,7 @@ function DeferredThreadMessage({
   isThreaded: boolean;
   messageOffset: number;
 }) {
+  useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const userMessageId =
     node.message.role === "user"
@@ -215,10 +219,10 @@ function getThreadLineText(node: ThreadDisplayNode, source: string): string {
   }
 
   if (node.message.role === "user") {
-    return title || "（用户问题）";
+    return title || t("（用户问题）");
   }
 
-  return title || "工具输出";
+  return title || t("工具输出");
 }
 
 function getThreadLineTone(node: ThreadDisplayNode) {
@@ -226,12 +230,12 @@ function getThreadLineTone(node: ThreadDisplayNode) {
     case "assistant":
       return {
         label: "text-foreground",
-        meta: "text-sky-600 dark:text-sky-400",
+        meta: "text-info",
       };
     case "user":
       return {
         label: "text-foreground",
-        meta: "text-emerald-600 dark:text-emerald-400",
+        meta: "text-success",
       };
     default:
       return {
@@ -250,11 +254,12 @@ function ThreadBranch({
   renderMessage: (node: ThreadDisplayNode, threadFold?: ThreadFoldControl) => ReactNode;
   source: string;
 }) {
+  const { t } = useTranslation();
   const hasChildren = node.children.length > 0;
   const { expanded, setExpanded } = useExpandAllControl(true);
   const lineText = getThreadLineText(node, source);
   const tone = getThreadLineTone(node);
-  const collapsedText = lineText.trim() || "当前分支";
+  const collapsedText = lineText.trim() || t("当前分支");
 
   // For user nodes the bubble itself owns the unified fold control
   // (collapsing the bubble + all of its replies together), so we hide
@@ -274,7 +279,7 @@ function ThreadBranch({
             className={`absolute right-full top-0 mr-1 rounded-full border p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground ${
               expanded ? "border-border/80 bg-background" : "border-border/60 bg-muted/40"
             }`}
-            title={expanded ? `折叠 ${collapsedText}` : `展开 ${collapsedText}`}
+            title={expanded ? t("折叠 {{v0}}", { v0: collapsedText }) : t("展开 {{v0}}", { v0: collapsedText })}
           >
             {expanded ? (
               <ChevronDown className="h-3.5 w-3.5" />
@@ -295,8 +300,7 @@ function ThreadBranch({
               </span>
               {hasChildren && (
                 <span className={`shrink-0 text-[11px] ${tone.meta}`}>
-                  {node.children.length} 条回复
-                </span>
+                  {node.children.length} {t("条回复")}</span>
               )}
             </div>
           )}
@@ -318,8 +322,7 @@ function ThreadBranch({
 
           {hasChildren && !expanded && !isUserNode && (
             <div className="mt-2 text-xs text-muted-foreground">
-              已折叠 {collapsedText}（{node.children.length} 条后续消息）
-            </div>
+              {t("已折叠")}{collapsedText}（{node.children.length} {t("条后续消息）")}</div>
           )}
         </div>
       </div>
@@ -343,6 +346,7 @@ export const MessageThread = memo(function MessageThread({
   messageOffset = 0,
   onMessageEdited,
 }: MessageThreadProps) {
+  const { t } = useTranslation();
   const addBookmark = useAppStore((state) => state.addBookmark);
   const removeBookmark = useAppStore((state) => state.removeBookmark);
   const isBookmarked = useAppStore((state) => state.isBookmarked);
@@ -557,6 +561,17 @@ export const MessageThread = memo(function MessageThread({
     return map;
   }, [messages]);
   const flatNodes = useMemo(() => flattenThreadNodes(roots), [roots]);
+  const toolResults = useMemo<ToolResultLookup>(() => {
+    const map: ToolResultLookup = new Map();
+    for (const message of messages) {
+      for (const block of message.content) {
+        if (block.type === "tool_result" && block.tool_use_id) {
+          map.set(block.tool_use_id, { content: block.content, isError: block.is_error });
+        }
+      }
+    }
+    return map;
+  }, [messages]);
   const shouldDefer = flatNodes.length > DEFER_RENDER_THRESHOLD;
   const eagerNodeIds = useMemo(() => {
     if (!shouldDefer) {
@@ -600,7 +615,7 @@ export const MessageThread = memo(function MessageThread({
               questionIndex={userQuestionIndexMap.get(msgId)}
               threadHint={
                 node.parentSource === "mention" && node.mentionAnchors[0]
-                  ? `通过 ${node.mentionAnchors[0]} 挂到该回复`
+                  ? t("通过 {{v0}} 挂到该回复", { v0: node.mentionAnchors[0] })
                   : null
               }
               replyCount={threadFold?.childrenCount ?? 0}
@@ -616,8 +631,8 @@ export const MessageThread = memo(function MessageThread({
                 disabled={!canFork || forkingMsgId !== null}
                 className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border/60 bg-background/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-60"
                 title={canFork
-                  ? "保留此轮完整回复，分叉为新会话"
-                  : "当前消息缺少分叉定位信息，请刷新会话或更新应用后重试"}
+                  ? t("保留此轮完整回复，分叉为新会话")
+                  : t("当前消息缺少分叉定位信息，请刷新会话或更新应用后重试")}
               >
                 {isForking ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -651,7 +666,7 @@ export const MessageThread = memo(function MessageThread({
               <button
                 onClick={handleResumeFromMessage}
                 className="mt-1 rounded p-1 text-muted-foreground opacity-0 transition-all group-hover/bookmark:opacity-100 hover:text-primary"
-                title="在终端中恢复此会话"
+                title={t("在终端中恢复此会话")}
               >
                 <Play className="h-3.5 w-3.5" />
               </button>
@@ -661,10 +676,10 @@ export const MessageThread = memo(function MessageThread({
                 onClick={() => handleToggleBookmark(msg, msgId)}
                 className={`rounded p-1 transition-all ${
                   bookmarked
-                    ? "text-yellow-500 opacity-100"
-                    : "text-muted-foreground opacity-0 group-hover/bookmark:opacity-100 hover:text-yellow-500"
+                    ? "text-warning opacity-100"
+                    : "text-muted-foreground opacity-0 group-hover/bookmark:opacity-100 hover:text-warning"
                 }`}
-                title={bookmarked ? "取消收藏" : "收藏此消息"}
+                title={bookmarked ? t("取消收藏") : t("收藏此消息")}
               >
                 <Star className={`h-3.5 w-3.5 ${bookmarked ? "fill-current" : ""}`} />
               </button>
@@ -688,11 +703,12 @@ export const MessageThread = memo(function MessageThread({
           <AssistantMessage
             message={msg}
             source={source}
+            toolResults={toolResults}
             showTimestamp={showTimestamp}
             showModel={showModel}
             layout={messageLayout}
             threadAnchor={node.threadAnchor}
-            threadHint={showActionButtons && node.forkUserMessageId ? "右击可从此回复分叉" : null}
+            threadHint={showActionButtons && node.forkUserMessageId ? t("右击可从此回复分叉") : null}
           />
         </div>
         {canEdit && msg.uuid && (
@@ -755,8 +771,7 @@ export const MessageThread = memo(function MessageThread({
           className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
         >
           <GitFork className="h-4 w-4 text-primary" />
-          从此回复继续分叉
-        </button>
+          {t("从此回复继续分叉")}</button>
       </div>
     );
   };
@@ -764,7 +779,7 @@ export const MessageThread = memo(function MessageThread({
   if (!isThreaded) {
     return (
       <div className="mx-auto max-w-4xl space-y-4 px-4 py-4">
-        {forkError && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">分叉失败：{forkError}</div>}
+        {forkError && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{t("分叉失败：")}{forkError}</div>}
         {roots.map((node) => renderMessage(node))}
         {renderAssistantContextMenu()}
         {editingMessage && (

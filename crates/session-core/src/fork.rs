@@ -124,12 +124,7 @@ fn target_index(kind: SessionSourceKind, rows: &[Record], target: &str) -> Resul
                     .pointer("/data/id")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
-                    .or_else(|| {
-                        record
-                            .value
-                            .get("seq")
-                            .map(|seq| format!("dsh-{seq}"))
-                    }),
+                    .or_else(|| record.value.get("seq").map(|seq| format!("dsh-{seq}"))),
                 _ => Some(line_message_id(record.line, &record.value)),
             };
             id.as_deref() == Some(target) && is_user(kind, &record.value)
@@ -393,8 +388,8 @@ fn fork_dsh(path: &Path, rows: &[Record], target: usize) -> Result<ForkResult, S
         &staging,
         &["session.v3.jsonl.zstd", "session.v4.jsonl.zstd"],
     )?;
-    let compressed = dsh::encode_rows(&history)
-        .map_err(|e| format!("压缩 DeepSeek Harness 分叉失败：{e}"));
+    let compressed =
+        dsh::encode_rows(&history).map_err(|e| format!("压缩 DeepSeek Harness 分叉失败：{e}"));
     let result = compressed.and_then(|bytes| {
         write_new(&staging.join(source_file_name), &bytes)?;
         publish_directory_fork(&staging, &destination)
@@ -557,7 +552,9 @@ fn fork_files(
                     rows.iter().find_map(|row| {
                         let row = &row.value;
                         if string(row, "type") != Some("user")
-                            || row.get("synthetic_reason").is_some_and(|value| !value.is_null())
+                            || row
+                                .get("synthetic_reason")
+                                .is_some_and(|value| !value.is_null())
                         {
                             return None;
                         }

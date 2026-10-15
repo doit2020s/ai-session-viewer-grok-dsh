@@ -130,11 +130,14 @@ fn native_session_names(grok_home: &Path) -> HashMap<String, NativeSessionNames>
         .collect()
 }
 
-fn grok_home_for_history(chat_history_path: &Path) -> Result<(PathBuf, String, Option<String>), String> {
+fn grok_home_for_history(
+    chat_history_path: &Path,
+) -> Result<(PathBuf, String, Option<String>), String> {
     let path = chat_history_path
         .canonicalize()
         .map_err(|error| format!("Grok 会话文件不存在：{error}"))?;
-    if !path.is_file() || path.file_name().and_then(|name| name.to_str()) != Some(CHAT_HISTORY_FILE) {
+    if !path.is_file() || path.file_name().and_then(|name| name.to_str()) != Some(CHAT_HISTORY_FILE)
+    {
         return Err("Grok 会话文件必须是 chat_history.jsonl".to_string());
     }
     let session_dir = path.parent().ok_or("Grok 会话目录不存在")?;
@@ -152,9 +155,14 @@ fn grok_home_for_history(chat_history_path: &Path) -> Result<(PathBuf, String, O
     } else if sessions_dir.file_name().and_then(|name| name.to_str()) == Some("sessions") {
         // Isolated fixture or another Grok home passed by the internal fork
         // function; public routes always resolve a configured session first.
-        sessions_dir.parent().ok_or("Grok 主目录不存在")?.to_path_buf()
+        sessions_dir
+            .parent()
+            .ok_or("Grok 主目录不存在")?
+            .to_path_buf()
     } else {
-        return Err("Grok 会话路径不是 sessions/<project>/<session-id>/chat_history.jsonl".to_string());
+        return Err(
+            "Grok 会话路径不是 sessions/<project>/<session-id>/chat_history.jsonl".to_string(),
+        );
     };
     let summary: Value = serde_json::from_slice(
         &fs::read(session_dir.join("summary.json"))
@@ -200,7 +208,10 @@ fn rename_lock() -> &'static Mutex<()> {
 /// Store a session name in Grok's native client-state registry. The caller
 /// supplies an existing history path; its summary ID must match its directory.
 /// Existing metadata (usage, activeAt, etc.) is preserved verbatim as JSON.
-pub fn set_custom_name_for_path(chat_history_path: &Path, name: Option<&str>) -> Result<(), String> {
+pub fn set_custom_name_for_path(
+    chat_history_path: &Path,
+    name: Option<&str>,
+) -> Result<(), String> {
     let (home, id, cwd) = grok_home_for_history(chat_history_path)?;
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     if let Some(name) = name {
@@ -284,7 +295,10 @@ pub fn set_custom_name_for_path(chat_history_path: &Path, name: Option<&str>) ->
             return Err("Grok CLI 同时修改了会话元数据，请刷新后重试".to_string());
         }
         if let Some(bytes) = before.as_deref() {
-            let backup = parent.join(format!("session-meta.{}.asv-backup.json", uuid::Uuid::new_v4()));
+            let backup = parent.join(format!(
+                "session-meta.{}.asv-backup.json",
+                uuid::Uuid::new_v4()
+            ));
             fs::write(&backup, bytes)
                 .map_err(|error| format!("备份 Grok 会话元数据失败：{error}"))?;
         }
@@ -372,6 +386,23 @@ fn text_content(value: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// Grok CLI stores injected context (`<user_info>`, `<system-reminder>`) as
+/// ordinary user rows and wraps the real prompt in `<user_query>`.
+fn visible_user_text(text: String) -> Option<String> {
+    if let Some((_, rest)) = text.split_once("<user_query>") {
+        let query = rest
+            .split_once("</user_query>")
+            .map_or(rest, |(query, _)| query);
+        let query = query.trim();
+        return (!query.is_empty()).then(|| query.to_string());
+    }
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("<system-reminder>") || trimmed.starts_with("<user_info>") {
+        return None;
+    }
+    Some(text)
+}
+
 fn display_message_from_row(row: &Value) -> Option<DisplayMessage> {
     let row_type = row.get("type")?.as_str()?;
     let (role, model, content) = match row_type {
@@ -385,7 +416,7 @@ fn display_message_from_row(row: &Value) -> Option<DisplayMessage> {
                 "user",
                 None,
                 DisplayContentBlock::Text {
-                    text: text_content(row.get("content")?)?,
+                    text: visible_user_text(text_content(row.get("content")?)?)?,
                 },
             )
         }
@@ -502,7 +533,8 @@ fn sync_updates_log(path: &Path, old_text: &str, new_text: &str) -> Result<usize
         return Ok(0);
     }
     let tmp_path = updates_path.with_extension("jsonl.codex-edit.tmp");
-    fs::write(&tmp_path, rendered).map_err(|error| format!("写入 Grok 恢复日志临时文件失败：{error}"))?;
+    fs::write(&tmp_path, rendered)
+        .map_err(|error| format!("写入 Grok 恢复日志临时文件失败：{error}"))?;
     fs::rename(&tmp_path, &updates_path)
         .map_err(|error| format!("保存 Grok 恢复日志失败：{error}"))?;
     Ok(replacements)
@@ -611,12 +643,7 @@ fn refresh_tail_summary(path: &Path, lines: &[String]) -> Result<(), String> {
             _ => None,
         }
     });
-    let compact: String = tail
-        .unwrap_or_default()
-        .trim()
-        .chars()
-        .take(500)
-        .collect();
+    let compact: String = tail.unwrap_or_default().trim().chars().take(500).collect();
     summary["last_turn_summary"] = Value::String(compact.clone());
     summary["last_recap"] = Value::String(compact);
     summary["updated_at"] = Value::String(chrono::Utc::now().to_rfc3339());
@@ -631,7 +658,8 @@ fn refresh_tail_summary(path: &Path, lines: &[String]) -> Result<(), String> {
 }
 
 pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
-    let content = fs::read_to_string(path).map_err(|error| format!("读取 Grok 会话失败：{error}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("读取 Grok 会话失败：{error}"))?;
     let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
     let mut target = None;
 
@@ -677,10 +705,14 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
         .filter(|text| normalized_update_text(text) == normalized_update_text(&old_text))
         .count();
     let updates_path = path.parent().map(|parent| parent.join("updates.jsonl"));
-    let has_updates_log = updates_path.as_ref().is_some_and(|candidate| candidate.is_file());
+    let has_updates_log = updates_path
+        .as_ref()
+        .is_some_and(|candidate| candidate.is_file());
     let removed_updates = remove_update_event(path, &row_type, &old_text, occurrence)?;
     if has_updates_log && removed_updates == 0 {
-        return Err("在 updates.jsonl 中找不到对应上下文，未删除以避免终端与界面不一致".to_string());
+        return Err(
+            "在 updates.jsonl 中找不到对应上下文，未删除以避免终端与界面不一致".to_string(),
+        );
     }
 
     lines.remove(target_index);
@@ -699,7 +731,8 @@ pub fn delete_message(path: &Path, message_id: &str) -> Result<(), String> {
 /// edited record is the last visible turn, keep summary.json in sync so the
 /// next CLI resume sees the same tail context.
 pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), String> {
-    let content = fs::read_to_string(path).map_err(|error| format!("读取 Grok 会话失败：{error}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("读取 Grok 会话失败：{error}"))?;
     let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
     let mut target_line = None;
     let mut target_type = None;
@@ -726,13 +759,15 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
         let Some(content_value) = row.get_mut("content") else {
             return Err("该消息没有可编辑的 content 字段".to_string());
         };
-        let previous_text = text_content(content_value).ok_or_else(|| "该消息没有可编辑的文本内容".to_string())?;
+        let previous_text =
+            text_content(content_value).ok_or_else(|| "该消息没有可编辑的文本内容".to_string())?;
         match content_value {
             Value::String(value) => *value = text.to_string(),
             Value::Array(blocks) => {
-                let Some(block) = blocks.iter_mut().find(|block| {
-                    block.get("type").and_then(Value::as_str) == Some("text")
-                }) else {
+                let Some(block) = blocks
+                    .iter_mut()
+                    .find(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                else {
                     return Err("该消息没有可编辑的文本块".to_string());
                 };
                 block["text"] = Value::String(text.to_string());
@@ -750,14 +785,10 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
         return Err("找不到要编辑的消息，可能会话已被其他进程修改".to_string());
     };
 
-    let last_conversation_line = lines
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, line)| {
-            let row = serde_json::from_str::<Value>(line).ok()?;
-            (row.get("type").and_then(Value::as_str) == Some("user")).then_some(index)
-        });
+    let last_conversation_line = lines.iter().enumerate().rev().find_map(|(index, line)| {
+        let row = serde_json::from_str::<Value>(line).ok()?;
+        (row.get("type").and_then(Value::as_str) == Some("user")).then_some(index)
+    });
 
     let mut output = lines.join("\n");
     if content.ends_with('\n') {
@@ -769,7 +800,9 @@ pub fn edit_message(path: &Path, message_id: &str, text: &str) -> Result<(), Str
 
     if let Some(previous_text) = old_text.as_deref() {
         let updates_path = path.parent().map(|parent| parent.join("updates.jsonl"));
-        let has_updates_log = updates_path.as_ref().is_some_and(|candidate| candidate.is_file());
+        let has_updates_log = updates_path
+            .as_ref()
+            .is_some_and(|candidate| candidate.is_file());
         let replacements = sync_updates_log(path, previous_text, text)?;
         if has_updates_log && replacements == 0 {
             return Err("展示文件已保存，但在 updates.jsonl 中找不到对应消息，已停止以避免终端继续使用旧上下文".to_string());
@@ -1280,7 +1313,8 @@ mod tests {
         .unwrap();
         fs::write(
             dir.join("summary.json"),
-            serde_json::json!({"last_turn_summary":"old answer","last_recap":"old answer"}).to_string(),
+            serde_json::json!({"last_turn_summary":"old answer","last_recap":"old answer"})
+                .to_string(),
         )
         .unwrap();
         let rows: Vec<Value> = fs::read_to_string(&history)
@@ -1292,7 +1326,8 @@ mod tests {
         edit_message(&history, &id, "new answer").unwrap();
         let saved = fs::read_to_string(&history).unwrap();
         assert!(saved.contains("new answer"));
-        let summary: Value = serde_json::from_str(&fs::read_to_string(dir.join("summary.json")).unwrap()).unwrap();
+        let summary: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("summary.json")).unwrap()).unwrap();
         assert_eq!(summary["last_turn_summary"], "new answer");
         assert_eq!(summary["last_recap"], "new answer");
         fs::remove_dir_all(dir).unwrap();
@@ -1334,7 +1369,9 @@ mod tests {
         let id = crate::fork::line_message_id(1, &rows[1]);
         delete_message(&history, &id).unwrap();
 
-        assert!(!fs::read_to_string(&history).unwrap().contains("private thought"));
+        assert!(!fs::read_to_string(&history)
+            .unwrap()
+            .contains("private thought"));
         let updates = fs::read_to_string(dir.join("updates.jsonl")).unwrap();
         assert!(!updates.contains("private thought"));
         assert!(updates.contains("answer"));
@@ -1455,7 +1492,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(custom_name_for_path(&history).as_deref(), Some("before"));
-        assert_eq!(native_display_name_for_path(&history).as_deref(), Some("before"));
+        assert_eq!(
+            native_display_name_for_path(&history).as_deref(),
+            Some("before")
+        );
         set_custom_name_for_path(&history, Some(" 新名称 ")).unwrap();
         let after: Value = serde_json::from_slice(&fs::read(&native).unwrap()).unwrap();
         assert_eq!(after["session-1"]["customName"], "新名称");
@@ -1471,7 +1511,10 @@ mod tests {
         assert!(cleared["session-1"].get("customName").is_none());
         assert_eq!(cleared["session-1"]["usage"]["tokens"], 7);
         assert_eq!(custom_name_for_path(&history), None);
-        assert_eq!(native_display_name_for_path(&history).as_deref(), Some("automatic"));
+        assert_eq!(
+            native_display_name_for_path(&history).as_deref(),
+            Some("automatic")
+        );
         let already_cleared = fs::read(&native).unwrap();
         set_custom_name_for_path(&history, None).unwrap();
         assert_eq!(fs::read(&native).unwrap(), already_cleared);
@@ -1511,7 +1554,8 @@ mod tests {
         fs::write(&native, b"not valid JSON").unwrap();
         assert!(set_custom_name_for_path(&history, Some("title")).is_err());
         assert_eq!(fs::read(&native).unwrap(), b"not valid JSON");
-        let foreign = serde_json::json!({"session-1":{"provider":"claude","customName":"keep"}}).to_string();
+        let foreign =
+            serde_json::json!({"session-1":{"provider":"claude","customName":"keep"}}).to_string();
         fs::write(&native, &foreign).unwrap();
         assert!(set_custom_name_for_path(&history, Some("title")).is_err());
         assert_eq!(fs::read_to_string(&native).unwrap(), foreign);
@@ -1529,27 +1573,84 @@ mod tests {
             std::process::id()
         ));
         write_session(&dir, "session-1", "/project", Some("prompt"));
-        let mut summary: Value = serde_json::from_slice(&fs::read(dir.join("summary.json")).unwrap()).unwrap();
+        let mut summary: Value =
+            serde_json::from_slice(&fs::read(dir.join("summary.json")).unwrap()).unwrap();
         summary["session_summary"] = Value::String("generated".to_string());
         fs::write(dir.join("summary.json"), summary.to_string()).unwrap();
         let cached = cached_session_for_dir(&dir).unwrap();
         assert_eq!(cached.entry.thread_name.as_deref(), Some("generated"));
         let mut cache = GrokDiskCache::default();
-        cache.sessions_by_dir.insert(dir.to_string_lossy().into_owned(), cached);
-        let names = HashMap::from([("session-1".to_string(), NativeSessionNames {
-            custom: Some("custom".to_string()),
-            auto: Some("automatic".to_string()),
-        })]);
-        assert_eq!(sessions_from_cache_with_names(&cache, &names)[0].thread_name.as_deref(), Some("custom"));
-        assert_eq!(sessions_from_cache_with_names(&cache, &names)[0].alias.as_deref(), Some("custom"));
-        let auto_only = HashMap::from([("session-1".to_string(), NativeSessionNames {
-            custom: None,
-            auto: Some("automatic".to_string()),
-        })]);
-        assert_eq!(sessions_from_cache_with_names(&cache, &auto_only)[0].thread_name.as_deref(), Some("automatic"));
-        assert_eq!(sessions_from_cache_with_names(&cache, &auto_only)[0].alias, None);
-        assert_eq!(sessions_from_cache_with_names(&cache, &HashMap::new())[0].thread_name.as_deref(), Some("generated"));
-        assert_eq!(sessions_from_cache_with_names(&cache, &HashMap::new())[0].alias, None);
+        cache
+            .sessions_by_dir
+            .insert(dir.to_string_lossy().into_owned(), cached);
+        let names = HashMap::from([(
+            "session-1".to_string(),
+            NativeSessionNames {
+                custom: Some("custom".to_string()),
+                auto: Some("automatic".to_string()),
+            },
+        )]);
+        assert_eq!(
+            sessions_from_cache_with_names(&cache, &names)[0]
+                .thread_name
+                .as_deref(),
+            Some("custom")
+        );
+        assert_eq!(
+            sessions_from_cache_with_names(&cache, &names)[0]
+                .alias
+                .as_deref(),
+            Some("custom")
+        );
+        let auto_only = HashMap::from([(
+            "session-1".to_string(),
+            NativeSessionNames {
+                custom: None,
+                auto: Some("automatic".to_string()),
+            },
+        )]);
+        assert_eq!(
+            sessions_from_cache_with_names(&cache, &auto_only)[0]
+                .thread_name
+                .as_deref(),
+            Some("automatic")
+        );
+        assert_eq!(
+            sessions_from_cache_with_names(&cache, &auto_only)[0].alias,
+            None
+        );
+        assert_eq!(
+            sessions_from_cache_with_names(&cache, &HashMap::new())[0]
+                .thread_name
+                .as_deref(),
+            Some("generated")
+        );
+        assert_eq!(
+            sessions_from_cache_with_names(&cache, &HashMap::new())[0].alias,
+            None
+        );
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hides_injected_context_and_unwraps_user_query() {
+        assert_eq!(
+            visible_user_text("<user_info>injected</user_info>".into()),
+            None
+        );
+        assert_eq!(
+            visible_user_text("<system-reminder>injected</system-reminder>".into()),
+            None
+        );
+        assert_eq!(
+            visible_user_text(
+                "<user_info>hidden</user_info>\n<user_query>actual prompt</user_query>".into()
+            ),
+            Some("actual prompt".into())
+        );
+        assert_eq!(
+            visible_user_text("ordinary prompt".into()),
+            Some("ordinary prompt".into())
+        );
     }
 }

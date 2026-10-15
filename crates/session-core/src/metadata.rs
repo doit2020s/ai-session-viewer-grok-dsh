@@ -308,3 +308,25 @@ pub fn get_all_cross_project_tags(source: &str) -> HashMap<String, Vec<String>> 
         _ => HashMap::new(),
     }
 }
+
+/// Overlay user tags (and, for non-Claude sources, aliases) onto a session
+/// list. Claude aliases come from the transcript's own custom-title record.
+pub fn merge_into_sessions(
+    source: &str,
+    project_id: &str,
+    sessions: &mut [crate::models::session::SessionIndexEntry],
+) {
+    let meta = load_metadata(source, project_id);
+    for session in sessions {
+        if let Some(sm) = meta.sessions.get(&session.session_id) {
+            // Grok aliases are read from the CLI's native session-meta.json.
+            // A stale viewer-only alias must never hide a CLI rename.
+            if source != "claude" && source != "grok" {
+                session.alias = sm.alias.clone();
+            }
+            if !sm.tags.is_empty() {
+                session.tags = Some(sm.tags.clone());
+            }
+        }
+    }
+}

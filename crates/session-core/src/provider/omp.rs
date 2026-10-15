@@ -711,26 +711,6 @@ pub fn delete_project(project_id: &str) -> Result<super::claude::DeleteResult, S
     })
 }
 
-/// Permanently remove one validated top-level session and its optional
-/// sibling artifact directory. Artifact removal happens first so failure
-/// cannot leave a transcript pointing at missing attachments.
-pub fn permanently_delete_session(path: &Path) -> Result<(), String> {
-    let artifact_path = path.with_extension("");
-    match fs::symlink_metadata(&artifact_path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("Failed to inspect OMP session artifacts: {error}")),
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err("OMP session artifact directory must not be a symbolic link".to_string());
-        }
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&artifact_path)
-            .map_err(|error| format!("Failed to delete OMP session artifacts: {error}"))?,
-        Ok(_) => return Err("OMP session artifact path is not a directory".to_string()),
-    }
-    fs::remove_file(path).map_err(|error| format!("Failed to delete OMP session: {error}"))?;
-    invalidate_sessions_cache();
-    Ok(())
-}
-
 pub fn parse_session_messages(
     path: &Path,
     page: usize,
@@ -933,21 +913,6 @@ mod tests {
         let xdg_data = root.join("data");
 
         assert_eq!(xdg_sessions_dir(None, Some(xdg_data), true), None);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn permanently_deletes_session_with_artifact_directory() {
-        let root = temporary_dir();
-        fs::create_dir_all(root.join("session-1")).unwrap();
-        let session_path = root.join("session-1.jsonl");
-        fs::write(&session_path, "session").unwrap();
-        fs::write(root.join("session-1").join("artifact.txt"), "artifact").unwrap();
-
-        permanently_delete_session(&session_path).unwrap();
-
-        assert!(!session_path.exists());
-        assert!(!root.join("session-1").exists());
         let _ = fs::remove_dir_all(root);
     }
 }

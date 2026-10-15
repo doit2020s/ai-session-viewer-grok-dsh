@@ -1,7 +1,10 @@
+import { t } from "../../i18n/index.js";
+import { useTranslation } from "react-i18next";
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import type { ProjectEntry } from "../../types";
 import type { DeleteLevel } from "../../types";
+import { EscapeToClose } from "../common/EscapeToClose";
 
 declare const __IS_TAURI__: boolean;
 
@@ -19,6 +22,7 @@ export function DeleteProjectDialog({
   onConfirm,
   onCancel,
 }: DeleteProjectDialogProps) {
+  const { t } = useTranslation();
   const [deleting, setDeleting] = useState(false);
   const [withCcConfig, setWithCcConfig] = useState(false);
 
@@ -36,11 +40,12 @@ export function DeleteProjectDialog({
   const displayName = project.alias ?? project.shortName;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
+      <EscapeToClose onClose={onCancel} disabled={deleting} />
       <div className="bg-card border border-border rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
         <h3 className="text-lg font-semibold mb-2">删除工作文件夹</h3>
         <p className="text-sm text-muted-foreground mb-1">
-          工程：<span className="font-medium text-foreground">{displayName}</span>
+          {t("工程：")}<span className="font-medium text-foreground">{displayName}</span>
         </p>
         <p className="text-xs text-muted-foreground mb-2">
           将删除会话管理器保存的整个工作区文件夹及其中 {project.sessionCount} 个会话、附件、快照和工具结果。
@@ -61,11 +66,9 @@ export function DeleteProjectDialog({
             className="mt-0.5 accent-destructive"
           />
           <span className="text-xs text-muted-foreground leading-relaxed">
-            同时清理 Claude Code 项目配置
-            {withCcConfig && (
-              <span className="block mt-1 text-yellow-600 dark:text-yellow-400">
-                将从 ~/.claude.json 移除该项目配置，下次进入该目录等于全新项目
-              </span>
+            {t("同时清理 Claude Code 项目配置")}{withCcConfig && (
+              <span className="block mt-1 text-warning">
+                {t("将从 ~/.claude.json 移除该项目配置，下次进入该目录等于全新项目")}</span>
             )}
           </span>
         </label>
@@ -77,8 +80,7 @@ export function DeleteProjectDialog({
             disabled={deleting}
             className="px-4 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors"
           >
-            取消
-          </button>
+            {t("取消")}</button>
           <button
             onClick={handleConfirm}
             disabled={deleting}
@@ -87,8 +89,7 @@ export function DeleteProjectDialog({
             {deleting ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                删除中...
-              </>
+                {t("删除中...")}</>
             ) : (
               "删除文件夹"
             )}

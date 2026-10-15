@@ -85,7 +85,8 @@ export type DisplayContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string }
   | { type: "tool_use"; id: string; name: string; input: string }
-  | { type: "tool_result"; toolUseId: string; content: string; isError: boolean }
+  // Serialized as-is by the backend (the variant fields are not camelCased).
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean }
   | { type: "reasoning"; text: string }
   | { type: "function_call"; name: string; arguments: string; callId: string }
   | { type: "function_call_output"; callId: string; output: string };
@@ -408,5 +409,7 @@ export interface RecycledItem {
   storedName: string;
   companionOriginalPath?: string | null;
   companionStoredName?: string | null;
+  /** Grouped project entry (OMP / Grok): every recycled path of the project. */
+  members?: { originalPath: string; storedName: string }[];
   movedAt: string;
 }

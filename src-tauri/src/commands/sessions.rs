@@ -6,26 +6,6 @@ use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
 use session_core::recyclebin;
 use session_core::session_files;
 
-fn merge_session_metadata(source: &str, project_id: &str, sessions: &mut [SessionIndexEntry]) {
-    let meta = metadata::load_metadata(source, project_id);
-    for session in sessions {
-        if let Some(sm) = meta.sessions.get(&session.session_id) {
-            if source == "claude" {
-                if !sm.tags.is_empty() {
-                    session.tags = Some(sm.tags.clone());
-                }
-            } else {
-                if source != "grok" {
-                    session.alias = sm.alias.clone();
-                }
-                if !sm.tags.is_empty() {
-                    session.tags = Some(sm.tags.clone());
-                }
-            }
-        }
-    }
-}
-
 #[tauri::command]
 pub async fn get_sessions(
     source: String,
@@ -42,7 +22,7 @@ pub async fn get_sessions(
             _ => return Err(format!("Unknown source: {}", source)),
         };
 
-        merge_session_metadata(&source, &project_id, &mut sessions);
+        metadata::merge_into_sessions(&source, &project_id, &mut sessions);
         Ok(sessions)
     })
     .await
@@ -65,7 +45,7 @@ pub async fn refresh_sessions_cache(
             _ => return Err(format!("Unknown source: {}", source)),
         };
 
-        merge_session_metadata(&source, &project_id, &mut sessions);
+        metadata::merge_into_sessions(&source, &project_id, &mut sessions);
         Ok(sessions)
     })
     .await
@@ -88,14 +68,14 @@ pub async fn get_invalid_sessions(
             _ => return Err(format!("Unknown source: {}", source)),
         };
 
-        merge_session_metadata(&source, &project_id, &mut sessions);
+        metadata::merge_into_sessions(&source, &project_id, &mut sessions);
         Ok(sessions)
     })
     .await
     .map_err(|error| format!("无效会话读取任务失败: {error}"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_session(
     file_path: String,
     source: String,
@@ -209,7 +189,7 @@ pub fn delete_session(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_session_meta(
     source: String,
     project_id: String,
@@ -254,7 +234,7 @@ pub fn update_session_meta(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_chat_session(
     source: String,
     project_path: String,
@@ -282,12 +262,12 @@ pub fn rename_chat_session(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_all_tags(source: String, project_id: String) -> Result<Vec<String>, String> {
     Ok(metadata::get_all_tags(&source, &project_id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_cross_project_tags(
     source: String,
 ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {

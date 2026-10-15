@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "ai-session-viewer"
-version = "2.22.0"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "libc",
@@ -4029,7 +4029,7 @@ dependencies = [
 
 [[package]]
 name = "session-core"
-version = "2.22.0"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -4055,7 +4055,7 @@ dependencies = [
 
 [[package]]
 name = "session-web"
-version = "2.22.0"
+version = "3.0.0"
 dependencies = [
  "axum",
  "clap",

@@ -1,3 +1,4 @@
+import { t } from "../i18n/index.js";
 import { create } from "zustand";
 import type {
   CliInstallation,
@@ -35,7 +36,8 @@ export interface ChatPaneState {
   model: string;
   source: ChatSource;
   messages: ChatMessage[];
-  rawOutput: string[];
+  /** Codex `token_usage` held until the turn's `done` event renders it. */
+  pendingCodexUsage: CodexUsage | null;
   isStreaming: boolean;
   error: string | null;
 }
@@ -60,7 +62,6 @@ interface ChatState {
 
   // Messages
   messages: ChatMessage[];
-  rawOutput: string[];
   isStreaming: boolean;
   error: string | null;
 
@@ -164,7 +165,7 @@ function createChatPaneState(
     model: localStorage.getItem("chat_lastUsedModel") || "",
     source: "claude",
     messages: [],
-    rawOutput: [],
+    pendingCodexUsage: null,
     isStreaming: false,
     error: null,
     ...overrides,
@@ -190,7 +191,6 @@ function toLegacyPaneFields(pane: ChatPaneState): Pick<
   | "model"
   | "source"
   | "messages"
-  | "rawOutput"
   | "isStreaming"
   | "error"
 > {
@@ -201,7 +201,6 @@ function toLegacyPaneFields(pane: ChatPaneState): Pick<
     model: pane.model,
     source: pane.source,
     messages: pane.messages,
-    rawOutput: pane.rawOutput,
     isStreaming: pane.isStreaming,
     error: pane.error,
   };
@@ -447,10 +446,10 @@ function parseClaudeStreamLine(line: string): ParseResult {
     let tokenInfo = "";
     if (usage) {
       const parts: string[] = [];
-      if (usage.input_tokens) parts.push(`输入: ${usage.input_tokens.toLocaleString()}`);
-      if (usage.output_tokens) parts.push(`输出: ${usage.output_tokens.toLocaleString()}`);
-      if (usage.cache_creation_input_tokens) parts.push(`写入缓存: ${usage.cache_creation_input_tokens.toLocaleString()}`);
-      if (usage.cache_read_input_tokens) parts.push(`读取缓存: ${usage.cache_read_input_tokens.toLocaleString()}`);
+      if (usage.input_tokens) parts.push(t("输入: {{v0}}", { v0: usage.input_tokens.toLocaleString() }));
+      if (usage.output_tokens) parts.push(t("输出: {{v0}}", { v0: usage.output_tokens.toLocaleString() }));
+      if (usage.cache_creation_input_tokens) parts.push(t("写入缓存: {{v0}}", { v0: usage.cache_creation_input_tokens.toLocaleString() }));
+      if (usage.cache_read_input_tokens) parts.push(t("读取缓存: {{v0}}", { v0: usage.cache_read_input_tokens.toLocaleString() }));
       if (parts.length > 0) tokenInfo = ` [${parts.join(" · ")}]`;
     }
 
@@ -754,122 +753,6 @@ function parseCodexStreamLine(line: string): CodexParseResult {
   // hook/*, turn/diff, turn/plan, account/*, fs/*, model/rerouted, etc.).
   return null;
 }
-type OmpParseResult =
-  | { action: "session_id"; id: string }
-  | { action: "add"; message: ChatMessage }
-  | { action: "delta"; delta: string }
-  | { action: "done" }
-  | { action: "error"; message: string }
-  | null;
-
-type OmpRecord = Record<string, unknown>;
-
-function ompRecord(value: unknown): OmpRecord | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as OmpRecord)
-    : null;
-}
-
-function ompString(record: OmpRecord, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function parseOmpMessage(data: OmpRecord): ChatMessage | null {
-  const message = ompRecord(data.message);
-  if (!message) return null;
-  const role = ompString(message, "role") === "user" ? "user" : ompString(message, "role") === "toolResult" ? "tool" : "assistant";
-  const rawContent = message.content;
-  const content: unknown[] = Array.isArray(rawContent) ? rawContent : [{ type: "text", text: rawContent }];
-  const blocks: ChatContentBlock[] = [];
-  for (const rawBlock of content) {
-    if (typeof rawBlock === "string") {
-      if (rawBlock) blocks.push({ type: "text", text: rawBlock });
-      continue;
-    }
-    const block = ompRecord(rawBlock);
-    if (!block) continue;
-    const blockType = ompString(block, "type");
-    if (blockType === "text" && ompString(block, "text")) {
-      blocks.push({ type: "text", text: ompString(block, "text") || "" });
-    } else if (blockType === "thinking" && ompString(block, "thinking")) {
-      blocks.push({ type: "thinking", text: ompString(block, "thinking") || "" });
-    } else if (blockType === "toolCall" && ompString(block, "name")) {
-      const args = block.arguments;
-      blocks.push({
-        type: "tool_use",
-        id: ompString(block, "id") || generateUUID(),
-        name: ompString(block, "name") || "tool",
-        input: typeof args === "string" ? args : JSON.stringify(args ?? {}, null, 2),
-      });
-    } else if (blockType === "toolResult") {
-      const result = block.content;
-      blocks.push({
-        type: "tool_result",
-        toolUseId: ompString(block, "toolCallId") || "",
-        content: typeof result === "string" ? result : JSON.stringify(result ?? "", null, 2),
-        isError: block.isError === true,
-      });
-    }
-  }
-  if (blocks.length === 0) return null;
-  return {
-    id: ompString(data, "id") || ompString(message, "id") || generateUUID(),
-    role,
-    content: blocks,
-    model: ompString(message, "model"),
-    timestamp: ompString(message, "timestamp") || new Date().toISOString(),
-  };
-}
-
-function parseOmpStreamLine(line: string): OmpParseResult {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  const data = ompRecord(parsed);
-  if (!data) return null;
-  if (ompString(data, "type") === "session" && ompString(data, "id")) {
-    return { action: "session_id", id: ompString(data, "id")! };
-  }
-  const type = ompString(data, "type");
-  const message = ompRecord(data.message);
-  if ((type === "message_start" || type === "message_end") && message) {
-    const converted = parseOmpMessage(data);
-    if (converted) return { action: "add", message: converted };
-    if (type === "message_start" && ompString(message, "role") === "assistant") {
-      return {
-        action: "add",
-        message: {
-          id: ompString(data, "id") || generateUUID(),
-          role: "assistant",
-          content: [],
-          model: ompString(message, "model"),
-          timestamp: new Date().toISOString(),
-        },
-      };
-    }
-    return null;
-  }
-  if (type === "message_update") {
-    const event = ompRecord(data.assistantMessageEvent);
-    const eventType = event ? ompString(event, "type") : undefined;
-    const delta = event ? ompString(event, "delta") || ompString(event, "text") : undefined;
-    if ((eventType === "text_delta" || eventType === "thinking_delta") && delta) {
-      return { action: "delta", delta };
-    }
-    return null;
-  }
-  if (type === "agent_end") return { action: "done" };
-  if (type === "notice" && ompString(data, "level") === "error") {
-    return { action: "error", message: ompString(data, "message") || "OMP error" };
-  }
-  return null;
-}
-
-
 export const useChatStore = create<ChatState>((set, get) => {
   const initialDefaultPane = createChatPaneState();
   const initialDefaultPaneModelList = createChatPaneModelListState();
@@ -1077,7 +960,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       const provider = source === "codex" ? "openai" : source === "grok" ? "xai" : source === "omp" ? "omp" : "anthropic";
       const customModels: ModelInfo[] = customIds
         .filter((id) => !existingIds.has(id))
-        .map((id) => ({ id, name: id, provider, group: "自定义", created: null }));
+        .map((id) => ({ id, name: id, provider, group: t("自定义"), created: null }));
       const allModels = [...customModels, ...models];
       set((currentState) => {
         const nextPaneModelList = createChatPaneModelListState({
@@ -1164,7 +1047,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           timestamp: new Date().toISOString(),
         },
       ],
-      rawOutput: [],
+      pendingCodexUsage: null,
     });
 
     try {
@@ -1222,7 +1105,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           timestamp: new Date().toISOString(),
         },
       ],
-      rawOutput: [],
+      pendingCodexUsage: null,
     });
 
     try {
@@ -1394,75 +1277,9 @@ export const useChatStore = create<ChatState>((set, get) => {
   addStreamLineToPane: (paneId, line) => {
     const pane = get().getPaneState(paneId);
 
-    if (pane.source === "omp") {
-      const parsed = parseOmpStreamLine(line);
-      get().setPaneState(paneId, (currentPane) => ({
-        ...currentPane,
-        rawOutput: [...currentPane.rawOutput, line],
-      }));
-      if (!parsed) return;
-      if (parsed.action === "session_id") {
-        get().setPaneSessionId(paneId, parsed.id);
-      } else if (parsed.action === "delta") {
-        get().setPaneState(paneId, (currentPane) => {
-          const messages = [...currentPane.messages];
-          const last = messages[messages.length - 1];
-          if (last?.role === "assistant") {
-            const textBlock = last.content.find((block) => block.type === "text");
-            if (textBlock?.type === "text") {
-              const index = last.content.indexOf(textBlock);
-              const content = [...last.content];
-              content[index] = { ...textBlock, text: textBlock.text + parsed.delta };
-              messages[messages.length - 1] = { ...last, content };
-            } else {
-              messages[messages.length - 1] = {
-                ...last,
-                content: [...last.content, { type: "text", text: parsed.delta }],
-              };
-            }
-          } else {
-            messages.push({
-              id: generateUUID(),
-              role: "assistant",
-              content: [{ type: "text", text: parsed.delta }],
-              timestamp: new Date().toISOString(),
-            });
-          }
-          return { ...currentPane, messages };
-        });
-      } else if (parsed.action === "add") {
-        get().setPaneState(paneId, (currentPane) => {
-          const messages = [...currentPane.messages];
-          const index = messages.findIndex((message) => message.id === parsed.message.id);
-          if (index >= 0) {
-            messages[index] = parsed.message;
-          } else if (
-            (parsed.message.role === "assistant" || parsed.message.role === "user") &&
-            messages[messages.length - 1]?.role === parsed.message.role
-          ) {
-            messages[messages.length - 1] = parsed.message;
-          } else {
-            messages.push(parsed.message);
-          }
-          return { ...currentPane, messages };
-        });
-      } else if (parsed.action === "error") {
-        get().setPaneState(paneId, { isStreaming: false, error: parsed.message });
-      } else if (parsed.action === "done") {
-        get().setPaneStreaming(paneId, false);
-      }
-      return;
-    }
-
     if (pane.source === "codex") {
       const parsed = parseCodexStreamLine(line);
-      if (!parsed) {
-        get().setPaneState(paneId, (currentPane) => ({
-          ...currentPane,
-          rawOutput: [...currentPane.rawOutput, line],
-        }));
-        return;
-      }
+      if (!parsed) return;
       if (parsed.action === "session_id") {
         get().setPaneSessionId(paneId, parsed.id);
       } else if (parsed.action === "replace_messages") {
@@ -1477,7 +1294,6 @@ export const useChatStore = create<ChatState>((set, get) => {
               : null;
           return {
             ...currentPane,
-            rawOutput: [...currentPane.rawOutput, line],
             messages: pending ? [...parsed.messages, pending] : parsed.messages,
           };
         });
@@ -1508,11 +1324,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               timestamp: new Date().toISOString(),
             });
           }
-          return {
-            ...currentPane,
-            rawOutput: [...currentPane.rawOutput, line],
-            messages,
-          };
+          return { ...currentPane, messages };
         });
       } else if (parsed.action === "add") {
         get().setPaneState(paneId, (currentPane) => {
@@ -1526,58 +1338,35 @@ export const useChatStore = create<ChatState>((set, get) => {
           } else {
             messages.push(incoming);
           }
-          return {
-            ...currentPane,
-            rawOutput: [...currentPane.rawOutput, line],
-            messages,
-          };
+          return { ...currentPane, messages };
         });
       } else if (parsed.action === "error") {
         get().setPaneState(paneId, (currentPane) => ({
           ...currentPane,
           isStreaming: false,
-          rawOutput: [...currentPane.rawOutput, line],
           error: parsed.message,
         }));
       } else if (parsed.action === "token_usage") {
-        // Stash for the upcoming "done" event. Encoded into rawOutput so we
-        // don't have to grow ChatPaneState.
-        const usageMarker = `__codex_usage__:${JSON.stringify(parsed.usage)}`;
-        get().setPaneState(paneId, (currentPane) => ({
-          ...currentPane,
-          rawOutput: [...currentPane.rawOutput, usageMarker],
-        }));
+        // Held for the upcoming "done" event.
+        get().setPaneState(paneId, { pendingCodexUsage: parsed.usage });
       } else if (parsed.action === "done") {
-        // Pull the last usage marker stashed via token_usage above.
-        const stash = (() => {
-          for (let i = pane.rawOutput.length - 1; i >= 0; i -= 1) {
-            const r = pane.rawOutput[i];
-            if (r.startsWith("__codex_usage__:")) {
-              try {
-                return JSON.parse(r.slice("__codex_usage__:".length)) as CodexUsage;
-              } catch {
-                return null;
-              }
-            }
-          }
-          return null;
-        })();
+        const stash = pane.pendingCodexUsage;
         if (stash) {
           const parts: string[] = [];
-          if (stash.inputTokens) parts.push(`输入: ${stash.inputTokens.toLocaleString()}`);
-          if (stash.outputTokens) parts.push(`输出: ${stash.outputTokens.toLocaleString()}`);
-          if (stash.cachedInputTokens) parts.push(`缓存命中: ${stash.cachedInputTokens.toLocaleString()}`);
+          if (stash.inputTokens) parts.push(t("输入: {{v0}}", { v0: stash.inputTokens.toLocaleString() }));
+          if (stash.outputTokens) parts.push(t("输出: {{v0}}", { v0: stash.outputTokens.toLocaleString() }));
+          if (stash.cachedInputTokens) parts.push(t("缓存命中: {{v0}}", { v0: stash.cachedInputTokens.toLocaleString() }));
           if (parts.length > 0) {
             get().setPaneState(paneId, (currentPane) => ({
               ...currentPane,
               isStreaming: false,
-              rawOutput: [...currentPane.rawOutput, line],
+              pendingCodexUsage: null,
               messages: [
                 ...currentPane.messages,
                 {
                   id: generateUUID(),
                   role: "system",
-                  content: [{ type: "text", text: `完成 [${parts.join(" · ")}]` }],
+                  content: [{ type: "text", text: t("完成 [{{v0}}]", { v0: parts.join(" · ") }) }],
                   timestamp: new Date().toISOString(),
                 },
               ],
@@ -1585,11 +1374,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             return;
           }
         }
-        get().setPaneState(paneId, (currentPane) => ({
-          ...currentPane,
-          isStreaming: false,
-          rawOutput: [...currentPane.rawOutput, line],
-        }));
+        get().setPaneState(paneId, { isStreaming: false, pendingCodexUsage: null });
       }
       return;
     }
@@ -1612,13 +1397,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       // ignore non-JSON
     }
 
-    if (!parsed) {
-      get().setPaneState(paneId, (currentPane) => ({
-        ...currentPane,
-        rawOutput: [...currentPane.rawOutput, line],
-      }));
-      return;
-    }
+    if (!parsed) return;
 
     get().setPaneState(paneId, (currentPane) => {
       let newMessages = currentPane.messages;
@@ -1667,11 +1446,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
       }
 
-      return {
-        ...currentPane,
-        rawOutput: [...currentPane.rawOutput, line],
-        messages: newMessages,
-      };
+      return { ...currentPane, messages: newMessages };
     });
   },
 

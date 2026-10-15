@@ -16,6 +16,19 @@ fn posix_single_quote(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
+/// Real session ids are UUIDs / thread ids; anything outside `[A-Za-z0-9._-]`
+/// could be interpreted by the shell that runs the resume command.
+fn validate_shell_safe_session_id(session_id: &str) -> Result<(), String> {
+    if session_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        Ok(())
+    } else {
+        Err(format!("invalid session_id: {session_id}"))
+    }
+}
+
 fn resume_command(source: &str, session_id: &str) -> Result<String, String> {
     match source {
         "claude" => Ok(format!("claude --resume {session_id}")),
@@ -36,10 +49,11 @@ fn grok_command(session_id: &str) -> String {
         .ok()
         .filter(|p| !p.trim().is_empty())
         .or_else(|| {
-            let home = std::env::var_os("USERPROFILE")
-                .or_else(|| std::env::var_os("HOME"))?;
+            let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
             let candidate = Path::new(&home).join(".grok").join("bin").join("grok.exe");
-            candidate.exists().then(|| candidate.to_string_lossy().into_owned())
+            candidate
+                .exists()
+                .then(|| candidate.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "grok".to_string());
     // The path is local configuration, but quote it for PowerShell/CMD so
@@ -59,11 +73,13 @@ pub fn resume_session(
     file_path: Option<String>,
     shell: Option<String>,
 ) -> Result<(), String> {
-    // The session id ends up in a shell command line (e.g. `claude --resume
-    // {id}` inside `bash -c '…'`). Reject anything that's not a single safe
-    // path component to prevent shell metacharacters (`; & | $() \``)
-    // sneaking in via a doctored session file.
+    // The session id ends up unquoted in a shell command line (e.g. `claude
+    // --resume {id}` inside `bash -c '…'`, cmd, PowerShell or AppleScript).
+    // `validate_session_id` only blocks path tricks, so additionally restrict
+    // the id to a shell-inert charset to keep a doctored session file from
+    // smuggling in metacharacters (`; & | $() \``).
     validate_session_id(&session_id)?;
+    validate_shell_safe_session_id(&session_id)?;
 
     // Try to derive the correct project path from the session file location
     let project_path = resolve_project_path(&source, &project_path, file_path.as_deref());
@@ -83,9 +99,13 @@ pub fn resume_session(
 
     let cli_cmd = if source == "grok" {
         #[cfg(target_os = "windows")]
-        { grok_command(&session_id) }
+        {
+            grok_command(&session_id)
+        }
         #[cfg(not(target_os = "windows"))]
-        { resume_command(&source, &session_id)? }
+        {
+            resume_command(&source, &session_id)?
+        }
     } else {
         resume_command(&source, &session_id)?
     };
@@ -264,10 +284,17 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, project_path: &str
         return;
     }
 
-    // Build an entry from the JSONL file metadata
-    let first_prompt = claude_parser::extract_first_prompt(session_file);
-    let metadata = claude_parser::extract_session_metadata(session_file);
-    let (_, git_branch, cwd) = metadata.unwrap_or((String::new(), None, None));
+    // Build an entry from the JSONL file metadata (one pass over the file).
+    let scan = claude_parser::scan_session_file_once(session_file);
+    let (first_prompt, git_branch, cwd, message_count) = match scan {
+        Some(scan) => (
+            scan.first_prompt,
+            scan.git_branch,
+            scan.project_path,
+            scan.message_count,
+        ),
+        None => (None, None, None, 0),
+    };
 
     let file_meta = fs::metadata(session_file).ok();
     let mtime = file_meta.as_ref().and_then(|m| {
@@ -293,8 +320,6 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, project_path: &str
         })
     });
 
-    let message_count = count_user_assistant(session_file);
-
     index.entries.push(SessionsIndexFileEntry {
         session_id: session_id.to_string(),
         full_path: Some(file_path.to_string()),
@@ -317,23 +342,6 @@ fn ensure_session_in_index(session_id: &str, file_path: &str, project_path: &str
     }
 }
 
-fn count_user_assistant(path: &Path) -> u32 {
-    use std::io::{BufRead, BufReader};
-    let file = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return 0,
-    };
-    let reader = BufReader::new(file);
-    let mut count: u32 = 0;
-    for line in reader.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.contains("\"type\":\"user\"") || trimmed.contains("\"type\":\"assistant\"") {
-            count += 1;
-        }
-    }
-    count
-}
-
 fn normalize_path(path: &str) -> String {
     if cfg!(windows) {
         path.replace('/', "\\")
@@ -344,7 +352,25 @@ fn normalize_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::resume_command;
+    use super::{resume_command, validate_shell_safe_session_id};
+
+    #[test]
+    fn shell_safe_session_id_rejects_metacharacters() {
+        assert!(validate_shell_safe_session_id("019f5569-e530-7ea3-8525-9e87d451a788").is_ok());
+        assert!(validate_shell_safe_session_id("thread_abc.1").is_ok());
+        for bad in [
+            "a;rm -rf ~",
+            "a&calc",
+            "a|b",
+            "$(id)",
+            "`id`",
+            "a b",
+            "a'b",
+            "a\"b",
+        ] {
+            assert!(validate_shell_safe_session_id(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn builds_omp_resume_command() {

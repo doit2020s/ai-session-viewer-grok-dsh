@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
-use crate::{require_ws_auth, AppToken, WsTicketStore};
+use crate::{check_ws_origin, require_ws_auth, AllowedOrigins, AppToken, WsTicketStore};
 
 /// Minimum interval between sending file change events.
 /// Docker volume mounts can produce frequent inotify events,
@@ -18,7 +18,7 @@ const MAX_BATCH_DURATION: Duration = Duration::from_secs(2);
 
 use session_core::parser::path_encoder::get_projects_dir;
 use session_core::provider::{claude, codex, dsh, grok, kiro, omp};
-use session_core::watcher_batch::collect_until_quiet;
+use session_core::watcher_batch::{collect_until_quiet, is_session_file_change};
 
 /// Shared broadcast sender for file change events
 pub type FsChangeTx = Arc<broadcast::Sender<Vec<String>>>;
@@ -106,11 +106,12 @@ fn run_file_watcher_once(tx_clone: &broadcast::Sender<Vec<String>>) {
         for event in events {
             match event {
                 Ok(event) => {
-                    changed.extend(event.paths.into_iter().filter(|path| {
-                        path.extension()
-                            .map(|ext| ext == "jsonl" || ext == "json" || ext == "zstd")
-                            .unwrap_or(false)
-                    }));
+                    changed.extend(
+                        event
+                            .paths
+                            .into_iter()
+                            .filter(|path| is_session_file_change(path)),
+                    );
                 }
                 Err(error) => tracing::warn!("Watch error: {error}"),
             }
@@ -198,9 +199,11 @@ pub async fn ws_handler(
     axum::extract::State(tx): axum::extract::State<FsChangeTx>,
     axum::extract::Extension(app_token): axum::extract::Extension<AppToken>,
     axum::extract::Extension(tickets): axum::extract::Extension<WsTicketStore>,
+    axum::extract::Extension(allowed_origins): axum::extract::Extension<AllowedOrigins>,
     headers: axum::http::HeaderMap,
     axum::extract::Query(query): axum::extract::Query<WsAuthQuery>,
 ) -> Result<Response, StatusCode> {
+    check_ws_origin(&headers, &allowed_origins)?;
     require_ws_auth(&headers, query.ticket.as_deref(), &app_token, &tickets)?;
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, tx)))
 }

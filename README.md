@@ -1,5 +1,7 @@
 # AI Session Viewer
 
+**简体中文** | [English](./README.en.md)
+
 <p align="center">
   <img src="src-tauri/icons/icon.png" width="128" height="128" alt="AI Session Viewer">
 </p>
@@ -10,13 +12,13 @@
 
 <p align="center">
   <a href="https://github.com/doit2020s/ai-session-viewer-grok-dsh/releases">
-    <img src="https://img.shields.io/github/v/release/zuoliangyu/AI-Session-Viewer?style=flat-square" alt="Release">
+    <img src="https://img.shields.io/github/v/release/doit2020s/ai-session-viewer-grok-dsh?style=flat-square" alt="Release">
   </a>
   <a href="https://github.com/doit2020s/ai-session-viewer-grok-dsh/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/zuoliangyu/AI-Session-Viewer/build.yml?style=flat-square&label=CI" alt="CI">
+    <img src="https://img.shields.io/github/actions/workflow/status/doit2020s/ai-session-viewer-grok-dsh/build.yml?style=flat-square&label=CI" alt="CI">
   </a>
   <a href="https://github.com/doit2020s/ai-session-viewer-grok-dsh/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/zuoliangyu/AI-Session-Viewer?style=flat-square" alt="License">
+    <img src="https://img.shields.io/github/license/doit2020s/ai-session-viewer-grok-dsh?style=flat-square" alt="License">
   </a>
 </p>
 
@@ -38,26 +40,24 @@
 - 删除工作文件夹时会递归处理提供商保存的整个会话工作区目录及其中全部会话产物，并作为一个回收站条目整体还原；不会删除实际项目或源码目录。
 - 可直接在任意历史提问处创建独立分叉，保留该轮完整回复和工具上下文；支持 Claude、Codex、Grok、DeepSeek、Kiro 与 OMP。
 
-> **What's New（v2.22.0）**：桌面与 Web 均支持 Claude、Codex、Grok、Oh My Pi 四来源 Fork；项目和会话默认使用便利贴式多列卡片，四个 Agent 保持纵向排列并支持在设置中显隐。新增最近浏览，精简阅读工具栏、目录与续聊区域，并适配窄屏导航和深色主题。Grok 分叉后提供续聊命令，Claude、Codex 和 Oh My Pi 可沿用应用内续聊。完整版本历史见 [CHANGELOG.md](./CHANGELOG.md)。
+> **本分支已合并上游 v3.0.0**：保留上述六来源与 Grok / OMP 应用内对话，加入上游的新界面、Web 安全默认值和跨卷回收站修复。完整版本历史见 [CHANGELOG.md](./CHANGELOG.md)。
 >
-> v2.15.x 起：在 **Codex desktop 中归档 / 删除的会话**残留为「(无标题)」幽灵条目已修复（删除对「文件已消失」幂等）；**会话导出**（JSON / Markdown / HTML，单个 + 批量）、**批量删除会话 / 项目**（移入回收站可还原）、**Codex 项目删除**；初次启动**扫描进度条** + 冷启动 rayon 限流给 UI 留一核，会话页 / 项目页全面**列表虚拟化**（`@tanstack/react-virtual`）。
+> ⚠️ **从 2.x 升级**：包含不兼容变更（Web 默认监听地址、令牌、续聊范围），详见 [CHANGELOG.md](./CHANGELOG.md#300---2026-09-30)。
 
 ## 截图
 
 <table>
   <tr>
-    <td><img src="./img/1.png" width="400" alt="项目列表"></td>
-    <td><img src="./img/2.png" width="400" alt="会话列表"></td>
+    <td><img src="./img/messages.png" width="400" alt="消息详情与位置条"></td>
+    <td><img src="./img/projects.png" width="400" alt="项目列表"></td>
   </tr>
   <tr>
-    <td><img src="./img/3.png" width="400" alt="消息详情"></td>
-    <td><img src="./img/4.png" width="400" alt="全局搜索"></td>
-  </tr>
-  <tr>
-    <td><img src="./img/5.png" width="400" alt="Token 统计"></td>
-    <td><img src="./img/6.png" width="400" alt="暗色主题"></td>
+    <td><img src="./img/tool-viewers.png" width="400" alt="工具调用查看器"></td>
+    <td><img src="./img/stats.png" width="400" alt="Token 与花费统计"></td>
   </tr>
 </table>
+
+更多截图（搜索、设置、Codex、暗色主题等）见 [docs/screenshots.md](./docs/screenshots.md)。截图使用虚构演示数据生成。
 
 ## 快速开始
 
@@ -77,29 +77,18 @@
 
 ### Web 服务器
 
-适合无 GUI 的服务器环境，通过浏览器远程访问。二进制为 musl 静态编译，**零系统依赖**，任何 Linux 发行版（Ubuntu、Debian、Rocky、CentOS、Alpine 等）下载即可运行。
-
-**直接运行（推荐）：**
+在无 GUI 的服务器上运行，通过浏览器访问：
 
 ```bash
-# 最简启动（默认监听 0.0.0.0:3000，所有网卡可访问）
-./session-web
-
-# 限制只监听本机（仅 localhost 可访问）
-./session-web --host 127.0.0.1
-
-# 完整参数（公网暴露时务必设置 --token）
-./session-web --host 0.0.0.0 --port 8080 --token my-secret
-
-# 环境变量
-ASV_HOST=0.0.0.0 ASV_PORT=8080 ASV_TOKEN=my-secret ./session-web
+./session-web                                  # 仅本机：http://127.0.0.1:3000
+./session-web --host 0.0.0.0 --token my-secret  # 局域网 / 公网（必须设置令牌）
 ```
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 |------|---------|--------|------|
-| `--host` | `ASV_HOST` | `0.0.0.0` | 监听地址（`0.0.0.0` = 所有网卡，`127.0.0.1` = 仅本机） |
+| `--host` | `ASV_HOST` | `127.0.0.1` | 监听地址（`0.0.0.0` = 所有网卡，`127.0.0.1` = 仅本机） |
 | `--port` | `ASV_PORT` | `3000` | 监听端口 |
-| `--token` | `ASV_TOKEN` | *(无)* | Bearer Token 认证，不设则**免认证**（局域网/公网部署必须设置） |
+| `--token` | `ASV_TOKEN` | *(无)* | Bearer Token 认证；监听非本机地址时必须设置，除非明确传入 `--allow-no-auth` |
 
 **直接运行 vs Docker：**
 
@@ -117,7 +106,7 @@ docker compose up        # 前台
 docker compose up -d     # 后台
 ```
 
-挂载路径、端口、Token 等在 [`docker-compose.yml`](docker-compose.yml) 配置；公网部署时取消 `ASV_TOKEN` 注释并设置密钥：
+挂载路径、端口、Token 等在 [`docker-compose.yml`](docker-compose.yml) 配置；Docker 部署必须设置 `ASV_TOKEN`：
 
 ```yaml
 environment:
@@ -297,10 +286,10 @@ Web API：`POST /api/sessions/fork`，JSON 请求为 `{ source, originalFilePath
 
 | 安装方式 | 更新行为 |
 |---------|---------|
-| **安装版** (MSI/NSIS/DMG/DEB) | 应用内一键下载 + 自动安装 + 重启 |
-| **便携版** (Windows Portable ZIP) | 检测到新版后引导跳转 GitHub Release 下载 |
+| **安装版** (MSI/NSIS/DMG/DEB) | 设置页手动检查本分支 Release，确认后安装 |
+| **便携版** (Windows Portable ZIP) | 设置页手动检查后跳转本分支 Release 下载 |
 
-- 启动约 1.5 秒后自动检查，发现新版直接弹确认框；设置弹窗「更新检查」可看完整面板
+- 本分支关闭启动时自动检查，以免将定制功能覆盖为上游构建；可在设置页手动检查本分支更新
 - 可查看版本变化 / Release Notes，支持忽略特定版本不再提示
 
 ### CLI 对话

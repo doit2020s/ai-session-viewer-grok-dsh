@@ -159,7 +159,8 @@ fn grok_fork_keeps_raw_tools_context_and_rewrites_summary() {
     assert_eq!(new_summary["session_summary"], "");
     assert_ne!(new_summary["request_id"], "old-request");
     assert_eq!(new_summary["customField"], true);
-    let client_state: Value = serde_json::from_slice(&fs::read(&client_state_path).unwrap()).unwrap();
+    let client_state: Value =
+        serde_json::from_slice(&fs::read(&client_state_path).unwrap()).unwrap();
     assert_eq!(
         client_state[&fork.new_session_id]["customName"],
         "(fork)已重命名原会话"
@@ -188,7 +189,10 @@ fn grok_fork_keeps_raw_tools_context_and_rewrites_summary() {
     fs::create_dir(original.join("prompt_context.json")).unwrap();
     let count = fs::read_dir(original.parent().unwrap()).unwrap().count();
     assert!(fork_files(SessionSourceKind::Grok, &path, &parsed, index).is_err());
-    assert_eq!(fs::read_dir(original.parent().unwrap()).unwrap().count(), count);
+    assert_eq!(
+        fs::read_dir(original.parent().unwrap()).unwrap().count(),
+        count
+    );
 }
 
 #[test]
@@ -233,8 +237,7 @@ fn grok_fork_uses_generated_title_then_first_prompt_when_unnamed() {
     let long_title = format!("Line one\n{}", "x".repeat(600));
     fs::write(
         &summary_path,
-        json!({"info":{"id":"old","cwd":"/project"},"session_summary":long_title})
-            .to_string(),
+        json!({"info":{"id":"old","cwd":"/project"},"session_summary":long_title}).to_string(),
     )
     .unwrap();
     let fork = fork_files(SessionSourceKind::Grok, &path, &parsed, 0).unwrap();
@@ -265,8 +268,7 @@ fn grok_fork_rolls_back_child_if_native_name_cannot_be_saved() {
     fs::write(&path, jsonl(&rows)).unwrap();
     fs::write(
         original.join("summary.json"),
-        json!({"info":{"id":"old","cwd":"/project"},"session_summary":"Original"})
-            .to_string(),
+        json!({"info":{"id":"old","cwd":"/project"},"session_summary":"Original"}).to_string(),
     )
     .unwrap();
     let client_state_dir = fixture.0.join("client-state");
@@ -341,10 +343,9 @@ fn kiro_fork_preserves_configuration_snapshots_and_selected_round() {
     let messages = kiro::parse_all_messages(new_path).unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].uuid.as_deref(), Some("u1"));
-    let metadata: Value = serde_json::from_slice(
-        &fs::read(new_path.with_file_name("session.json")).unwrap(),
-    )
-    .unwrap();
+    let metadata: Value =
+        serde_json::from_slice(&fs::read(new_path.with_file_name("session.json")).unwrap())
+            .unwrap();
     assert_eq!(metadata["id"], fork.new_session_id);
     assert_eq!(metadata["title"], "Original（分叉）");
     assert!(new_path
