@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- Grok 会话 ZIP 备份现会记录原生 `customName`，还原后写回 Grok 的名称注册表；会话日志、摘要、附件和重复导入保持原有行为。旧版 ZIP 未保存该名称，无法从旧包中补回。
+- 还原前校验备份清单中的会话 ID、主文件名和目录型会话标记，避免非法路径写入。
+
 ### Fork integration of upstream 3.0.0
 
 - Merged upstream 3.0.0 UI, Web security defaults, shared CLI and file-watcher logic, and recoverable Web session deletion into this fork.

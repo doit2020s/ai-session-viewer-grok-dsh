@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +27,8 @@ pub struct BackupSessionInput {
 struct ArchiveSession {
     session_id: String,
     title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grok_custom_name: Option<String>,
     archive_dir: String,
     primary_name: String,
     directory_backed: bool,
@@ -138,6 +140,15 @@ pub fn create_backup(
         let mut file_count = 0usize;
         for (index, input) in sessions.iter().enumerate() {
             let primary = validate_session_file(source, &input.file_path)?;
+            if source == "grok"
+                && primary
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    != Some(input.session_id.as_str())
+            {
+                return Err("Grok 会话 ID 与会话目录不匹配".to_string());
+            }
             let archive_dir = format!("sessions/{index:05}");
             let primary_name = primary
                 .file_name()
@@ -169,6 +180,11 @@ pub fn create_backup(
             manifest_sessions.push(ArchiveSession {
                 session_id: input.session_id.clone(),
                 title: input.title.clone(),
+                grok_custom_name: if source == "grok" {
+                    grok::custom_name_for_path(&primary)
+                } else {
+                    None
+                },
                 archive_dir,
                 primary_name,
                 directory_backed: directory_backed(source),
@@ -369,6 +385,14 @@ pub fn restore_backup(
     let mut restored = Vec::new();
     let mut skipped = 0usize;
     for session in &manifest.sessions {
+        crate::metadata::validate_session_id(&session.session_id)?;
+        let primary_name = Path::new(&session.primary_name);
+        if primary_name.components().count() != 1
+            || !matches!(primary_name.components().next(), Some(Component::Normal(_)))
+            || session.directory_backed != directory_backed(target_source)
+        {
+            return Err("备份清单中的会话路径无效".to_string());
+        }
         let destination = if session.directory_backed {
             target_dir.join(&session.session_id)
         } else {
@@ -394,6 +418,19 @@ pub fn restore_backup(
             )?;
             if session.directory_backed {
                 fs::rename(&staging, &destination).map_err(|e| e.to_string())?;
+                if target_source == "grok" {
+                    if let Some(name) = session.grok_custom_name.as_deref() {
+                        let restored_history = destination.join(&session.primary_name);
+                        if let Err(error) =
+                            grok::set_custom_name_for_path(&restored_history, Some(name))
+                        {
+                            fs::rename(&destination, &staging).map_err(|rollback_error| {
+                                format!("还原 Grok 会话名失败：{error}；会话目录回滚失败：{rollback_error}")
+                            })?;
+                            return Err(format!("还原 Grok 会话名失败：{error}"));
+                        }
+                    }
+                }
             } else {
                 let primary = staging.join(&session.primary_name);
                 fs::rename(&primary, &destination).map_err(|e| e.to_string())?;
@@ -432,6 +469,88 @@ pub fn restore_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_archive_session_without_grok_name_is_still_readable() {
+        let session: ArchiveSession = serde_json::from_value(serde_json::json!({
+            "sessionId": "11111111-1111-4111-8111-111111111111",
+            "title": "Old title",
+            "archiveDir": "sessions/00000",
+            "primaryName": "chat_history.jsonl",
+            "directoryBacked": true
+        }))
+        .unwrap();
+        assert_eq!(session.grok_custom_name, None);
+    }
+
+    #[test]
+    fn grok_backup_restore_preserves_files_cwd_and_native_name() {
+        let root = std::env::temp_dir().join(format!("asv-grok-archive-{}", uuid::Uuid::new_v4()));
+        let old_home = root.join("old-grok");
+        let new_home = root.join("new-grok");
+        let id = "11111111-1111-4111-8111-111111111111";
+        let old_dir = old_home.join("sessions").join("old-project").join(id);
+        fs::create_dir_all(old_dir.join("attachments")).unwrap();
+        let old_history = old_dir.join("chat_history.jsonl");
+        fs::write(&old_history, b"{\"type\":\"user\",\"content\":\"hello\"}\n").unwrap();
+        fs::write(
+            old_dir.join("summary.json"),
+            serde_json::json!({"info":{"id":id,"cwd":r"C:\old"},"session_summary":"hello"})
+                .to_string(),
+        )
+        .unwrap();
+        fs::write(old_dir.join("attachments").join("note.txt"), b"attachment").unwrap();
+        std::env::set_var("GROK_HOME", &old_home);
+        grok::set_custom_name_for_path(&old_history, Some("Renamed Grok session")).unwrap();
+
+        let archive = root.join("backup.zip");
+        let backup = create_backup(
+            "grok",
+            r"C:\old",
+            Some(r"C:\old"),
+            &[BackupSessionInput {
+                session_id: id.to_string(),
+                file_path: old_history.to_string_lossy().into_owned(),
+                title: Some("Renamed Grok session".to_string()),
+            }],
+            &archive,
+        )
+        .unwrap();
+        assert_eq!(backup.session_count, 1);
+        assert_eq!(backup.file_count, 3);
+
+        let anchor_dir = new_home.join("sessions").join("new-project").join("anchor");
+        fs::create_dir_all(&anchor_dir).unwrap();
+        let anchor = anchor_dir.join("chat_history.jsonl");
+        fs::write(&anchor, b"{\"type\":\"user\",\"content\":\"anchor\"}\n").unwrap();
+        std::env::set_var("GROK_HOME", &new_home);
+        let first =
+            restore_backup(&archive, "grok", Some(r"D:\new"), anchor.to_str().unwrap()).unwrap();
+        assert_eq!((first.restored, first.skipped), (1, 0));
+        let restored_dir = anchor_dir.parent().unwrap().join(id);
+        let restored_history = restored_dir.join("chat_history.jsonl");
+        assert_eq!(
+            fs::read(&restored_history).unwrap(),
+            fs::read(&old_history).unwrap()
+        );
+        assert_eq!(
+            fs::read(restored_dir.join("attachments").join("note.txt")).unwrap(),
+            b"attachment"
+        );
+        let summary: Value =
+            serde_json::from_slice(&fs::read(restored_dir.join("summary.json")).unwrap()).unwrap();
+        assert_eq!(summary["info"]["cwd"], r"D:\new");
+        assert_eq!(
+            grok::custom_name_for_path(&restored_history).as_deref(),
+            Some("Renamed Grok session")
+        );
+
+        let second =
+            restore_backup(&archive, "grok", Some(r"D:\new"), anchor.to_str().unwrap()).unwrap();
+        assert_eq!((second.restored, second.skipped), (0, 1));
+        std::env::remove_var("GROK_HOME");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn zip_prefix_round_trip_and_kiro_workspace_rewrite() {
