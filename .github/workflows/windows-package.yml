@@ -1,0 +1,41 @@
+name: Windows 11 Package
+
+on:
+  push:
+    branches: ['build/windows11-20261022']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+      - run: npm ci
+      - name: Build local Windows package
+        shell: pwsh
+        run: ./scripts/build.ps1 --bundles nsis
+      - name: Prepare portable archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package
+          Copy-Item target/release/ai-session-viewer.exe package/
+          Compress-Archive -Path package/ai-session-viewer.exe -DestinationPath package/AI-Session-Viewer-3.0.0-windows-x64-portable.zip
+          Copy-Item target/release/bundle/nsis/*-setup.exe package/
+          Remove-Item package/ai-session-viewer.exe
+          Get-ChildItem package -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content package/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Session-Viewer-3.0.0-Windows11-x64
+          path: package/*
+          retention-days: 14
